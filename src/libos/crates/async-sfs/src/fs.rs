@@ -1,0 +1,1086 @@
+use crate::prelude::*;
+use crate::structs::*;
+use crate::utils::{BlockRangeIter, Dirty};
+use async_trait::async_trait;
+use async_vfs::{AsyncFileSystem, AsyncInode};
+use block_device::{BlockDevice, BlockDeviceExt};
+
+use bitvec::prelude::*;
+use std::any::Any;
+use std::fmt::{Debug, Formatter};
+use std::mem::MaybeUninit;
+use std::{
+    collections::BTreeMap,
+    string::String,
+    sync::{Arc, Weak},
+    vec,
+    vec::Vec,
+};
+
+/// Inode for AsyncSimpleFS
+#[derive(Debug)]
+pub struct SFSInode(Option<InodeInner>);
+
+impl SFSInode {
+    pub(crate) fn inner(&self) -> &InodeInner {
+        debug_assert!(self.0.is_some());
+        self.0.as_ref().unwrap()
+    }
+}
+
+#[async_trait]
+impl AsyncInode for SFSInode {
+    async fn read_at(&self, offset: usize, buf: &mut [u8]) -> Result<usize> {
+        let len = match self.metadata()?.type_ {
+            FileType::File => self.inner()._read_at(offset, buf).await?,
+            FileType::SymLink => self.inner()._read_at(offset, buf).await?,
+            _ => return_errno!(EISDIR, "not file"),
+        };
+        Ok(len)
+    }
+
+    async fn write_at(&self, offset: usize, buf: &[u8]) -> Result<usize> {
+        let DiskInode { type_, size, .. } = **self.inner().disk_inode.read();
+        let len = match type_ {
+            FileType::File | FileType::SymLink => {
+                let end_offset = offset + buf.len();
+                if (size as usize) < end_offset {
+                    self.inner()._resize(end_offset).await?;
+                }
+                self.inner()._write_at(offset, buf).await?
+            }
+            _ => return_errno!(EISDIR, "not file"),
+        };
+        Ok(len)
+    }
+
+    /// the size returned here is logical size(entry num for directory), not the disk space used.
+    fn metadata(&self) -> Result<Metadata> {
+        let disk_inode = self.inner().disk_inode.read();
+        Ok(Metadata {
+            dev: 0,
+            rdev: 0,
+            inode: self.inner().id,
+            size: match disk_inode.type_ {
+                FileType::File | FileType::SymLink | FileType::Dir => disk_inode.size as usize,
+                FileType::CharDevice => 0,
+                FileType::BlockDevice => 0,
+                _ => panic!("Unknown file type"),
+            },
+            mode: 0o777,
+            type_: disk_inode.type_.clone(),
+            blocks: disk_inode.blocks as usize * (BLOCK_SIZE / 512), // Number of 512B blocks
+            atime: Timespec { sec: 0, nsec: 0 },
+            mtime: Timespec { sec: 0, nsec: 0 },
+            ctime: Timespec { sec: 0, nsec: 0 },
+            nlinks: disk_inode.nlinks as usize,
+            uid: 0,
+            gid: 0,
+            blk_size: BLOCK_SIZE,
+        })
+    }
+
+    fn set_metadata(&self, _metadata: &Metadata) -> Result<()> {
+        // No-op for sfs
+        Ok(())
+    }
+
+    async fn sync_all(&self) -> Result<()> {
+        self.inner().sync_metadata().await?;
+        Ok(())
+    }
+
+    async fn sync_data(&self) -> Result<()> {
+        // Do nothing?
+        Ok(())
+    }
+
+    async fn resize(&self, len: usize) -> Result<()> {
+        let type_ = self.metadata()?.type_;
+        if type_ != FileType::File && type_ != FileType::SymLink {
+            return_errno!(EISDIR, "not file");
+        }
+        self.inner()._resize(len).await?;
+        Ok(())
+    }
+
+    async fn create(&self, name: &str, type_: FileType, _mode: u16) -> Result<Arc<dyn AsyncInode>> {
+        let info = self.metadata()?;
+        if info.type_ != FileType::Dir {
+            return_errno!(ENOTDIR, "not dir");
+        }
+        if info.nlinks == 0 {
+            return_errno!(ENOENT, "dir removed");
+        }
+
+        // Ensure the name is not exist
+        if self.inner().get_file_inode_id(name).await.is_some() {
+            return_errno!(EEXIST, "entry exist");
+        }
+
+        // Create new INode
+        let inode = match type_ {
+            FileType::File => self.inner().fs.inner().new_inode_file()?,
+            FileType::SymLink => self.inner().fs.inner().new_inode_symlink()?,
+            FileType::Dir => {
+                self.inner()
+                    .fs
+                    .inner()
+                    .new_inode_dir(self.inner().id)
+                    .await?
+            }
+            _ => return_errno!(EINVAL, "invalid type"),
+        };
+
+        // Write new entry
+        self.inner()
+            .append_direntry(&DiskEntry {
+                id: inode.inner().id as u32,
+                name: Str256::from(name),
+            })
+            .await?;
+        inode.inner().nlinks_inc();
+        if type_ == FileType::Dir {
+            inode.inner().nlinks_inc(); //for .
+            self.inner().nlinks_inc(); //for ..
+        }
+
+        Ok(inode)
+    }
+
+    async fn link(&self, name: &str, other: &Arc<dyn AsyncInode>) -> Result<()> {
+        let info = self.metadata()?;
+        if info.type_ != FileType::Dir {
+            return_errno!(ENOTDIR, "not dir");
+        }
+        if info.nlinks == 0 {
+            return_errno!(ENOENT, "dir removed");
+        }
+        if !self.inner().get_file_inode_id(name).await.is_none() {
+            return_errno!(EEXIST, "entry exist");
+        }
+        let child = other
+            .downcast_ref::<SFSInode>()
+            .ok_or(errno!(EXDEV, "not same fs"))?;
+        if !Arc::ptr_eq(&self.fs(), &child.fs()) {
+            return_errno!(EXDEV, "not same fs");
+        }
+        if child.metadata()?.type_ == FileType::Dir {
+            return_errno!(EISDIR, "entry is dir");
+        }
+        self.inner()
+            .append_direntry(&DiskEntry {
+                id: child.inner().id as u32,
+                name: Str256::from(name),
+            })
+            .await?;
+        child.inner().nlinks_inc();
+        Ok(())
+    }
+
+    async fn unlink(&self, name: &str) -> Result<()> {
+        let info = self.metadata()?;
+        if info.type_ != FileType::Dir {
+            return_errno!(ENOTDIR, "not dir");
+        }
+        if info.nlinks == 0 {
+            return_errno!(ENOENT, "dir removed");
+        }
+        if name == "." || name == ".." {
+            return_errno!(EISDIR, "name is dir");
+        }
+
+        let (inode_id, entry_id) = self
+            .inner()
+            .get_file_inode_and_entry_id(name)
+            .await
+            .ok_or(errno!(ENOENT, "not found"))?;
+        let inode = self.inner().fs.inner().get_inode(inode_id).await;
+
+        let type_ = inode.metadata()?.type_;
+        if type_ == FileType::Dir {
+            // only . and ..
+            if inode.metadata()?.size / DIRENT_SIZE > 2 {
+                return_errno!(ENOTEMPTY, "dir not empty");
+            }
+        }
+        inode.inner().nlinks_dec();
+        if type_ == FileType::Dir {
+            inode.inner().nlinks_dec(); //for .
+            self.inner().nlinks_dec(); //for ..
+        }
+        self.inner().remove_direntry(entry_id).await?;
+
+        Ok(())
+    }
+
+    async fn move_(
+        &self,
+        old_name: &str,
+        target: &Arc<dyn AsyncInode>,
+        new_name: &str,
+    ) -> Result<()> {
+        let info = self.metadata()?;
+        if info.type_ != FileType::Dir {
+            return_errno!(ENOTDIR, "self not dir");
+        }
+        if info.nlinks == 0 {
+            return_errno!(ENOENT, "dir removed");
+        }
+        if old_name == "." || old_name == ".." {
+            return_errno!(EISDIR, "name is dir");
+        }
+
+        let dest = target
+            .downcast_ref::<SFSInode>()
+            .ok_or(errno!(EXDEV, "not same fs"))?;
+        let dest_info = dest.metadata()?;
+        if !Arc::ptr_eq(&self.fs(), &dest.fs()) {
+            return_errno!(EXDEV, "not same fs");
+        }
+        if dest_info.type_ != FileType::Dir {
+            return_errno!(ENOTDIR, "dest not dir");
+        }
+        if dest_info.nlinks == 0 {
+            return_errno!(ENOENT, "dest dir removed");
+        }
+        if dest.inner().get_file_inode_id(new_name).await.is_some() {
+            return_errno!(EEXIST, "dest entry exist");
+        }
+
+        let (inode_id, entry_id) = self
+            .inner()
+            .get_file_inode_and_entry_id(old_name)
+            .await
+            .ok_or(errno!(ENOENT, "not found"))?;
+        if info.inode == dest_info.inode {
+            // rename: in place modify name
+            self.inner()
+                .write_direntry(
+                    entry_id,
+                    &DiskEntry {
+                        id: inode_id as u32,
+                        name: Str256::from(new_name),
+                    },
+                )
+                .await?;
+        } else {
+            // move
+            dest.inner()
+                .append_direntry(&DiskEntry {
+                    id: inode_id as u32,
+                    name: Str256::from(new_name),
+                })
+                .await?;
+            self.inner().remove_direntry(entry_id).await?;
+
+            let inode = self.inner().fs.inner().get_inode(inode_id).await;
+            if inode.metadata()?.type_ == FileType::Dir {
+                self.inner().nlinks_dec();
+                dest.inner().nlinks_inc();
+            }
+        }
+        Ok(())
+    }
+
+    async fn find(&self, name: &str) -> Result<Arc<dyn AsyncInode>> {
+        let info = self.metadata()?;
+        if info.type_ != FileType::Dir {
+            return_errno!(ENOTDIR, "not dir");
+        }
+        let inode_id = self
+            .inner()
+            .get_file_inode_id(name)
+            .await
+            .ok_or(errno!(ENOENT, "not found"))?;
+        Ok(self.inner().fs.inner().get_inode(inode_id).await)
+    }
+
+    async fn read_link(&self) -> Result<String> {
+        if self.metadata()?.type_ != FileType::SymLink {
+            return_errno!(EINVAL, "not symlink");
+        }
+        let mut content = vec![0u8; PATH_MAX];
+        let len = self.read_at(0, &mut content).await?;
+        let path = std::str::from_utf8(&content[..len])
+            .map_err(|_| errno!(ENOENT, "invalid symlink content"))?;
+        Ok(String::from(path))
+    }
+
+    async fn write_link(&self, target: &str) -> Result<()> {
+        if self.metadata()?.type_ != FileType::SymLink {
+            return_errno!(EINVAL, "not symlink");
+        }
+        let data = target.as_bytes();
+        let len = self.write_at(0, data).await?;
+        debug_assert!(len == data.len());
+        Ok(())
+    }
+
+    async fn get_entry(&self, id: usize) -> Result<String> {
+        let info = self.metadata()?;
+        if info.type_ != FileType::Dir {
+            return_errno!(ENOTDIR, "not dir");
+        }
+        if id >= info.size as usize / DIRENT_SIZE {
+            return_errno!(ENOENT, "can not find");
+        };
+        let entry = self.inner().read_direntry(id).await?;
+        Ok(String::from(entry.name.as_ref()))
+    }
+
+    fn ioctl(&self, _cmd: &mut dyn IoctlCmd) -> Result<()> {
+        return_errno!(ENOSYS, "not support ioctl");
+    }
+
+    fn fs(&self) -> Arc<dyn AsyncFileSystem> {
+        self.inner().fs.clone()
+    }
+
+    fn as_any_ref(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl Drop for SFSInode {
+    // Auto sync when drop
+    fn drop(&mut self) {
+        let inode_inner = self.0.take().unwrap();
+        // Must block_on here to write back the metadata
+        async_rt::task::block_on(async move {
+            inode_inner
+                .async_drop()
+                .await
+                .expect("Failed to drop the SFSInode");
+        });
+    }
+}
+
+/// Inner inode for AsyncSimpleFS
+pub(crate) struct InodeInner {
+    /// INode number
+    id: InodeId,
+    /// On-disk INode
+    disk_inode: RwLock<Dirty<DiskInode>>,
+    /// Reference to SFS, used by almost all operations
+    fs: Arc<AsyncSimpleFS>,
+}
+
+impl Debug for InodeInner {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "INode {{ id: {}, disk: {:?} }}",
+            self.id, self.disk_inode
+        )
+    }
+}
+
+impl InodeInner {
+    /// Map file block id to device block id
+    async fn get_device_block_id(&self, file_block_id: BlockId) -> Result<BlockId> {
+        let disk_inode = self.disk_inode.read();
+        let device_block_id = match file_block_id {
+            id if id >= disk_inode.blocks as BlockId => {
+                return_errno!(EINVAL, "invalid file block id")
+            }
+            id if id < MAX_NBLOCK_DIRECT => disk_inode.direct[id],
+            id if id < MAX_NBLOCK_INDIRECT => {
+                let device_block_id = self
+                    .fs
+                    .inner()
+                    .device
+                    .load_struct::<u32>(disk_inode.indirect as BlockId, ENTRY_SIZE * (id - NDIRECT))
+                    .await?;
+                device_block_id
+            }
+            id if id < MAX_NBLOCK_DOUBLE_INDIRECT => {
+                // double indirect
+                let indirect_id = id - MAX_NBLOCK_INDIRECT;
+                let indirect_block_id = self
+                    .fs
+                    .inner()
+                    .device
+                    .load_struct::<u32>(
+                        disk_inode.db_indirect as BlockId,
+                        ENTRY_SIZE * (indirect_id / BLK_NENTRY),
+                    )
+                    .await?;
+                assert!(indirect_block_id > 0);
+                let device_block_id = self
+                    .fs
+                    .inner()
+                    .device
+                    .load_struct::<u32>(
+                        indirect_block_id as BlockId,
+                        ENTRY_SIZE * (indirect_id as usize % BLK_NENTRY),
+                    )
+                    .await?;
+                assert!(device_block_id > 0);
+                device_block_id
+            }
+            _ => unimplemented!("triple indirect blocks is not supported"),
+        };
+        Ok(device_block_id as BlockId)
+    }
+
+    /// Set the device block id for the file block id
+    async fn set_device_block_id(
+        &self,
+        file_block_id: BlockId,
+        device_block_id: BlockId,
+    ) -> Result<()> {
+        match file_block_id {
+            id if id >= self.disk_inode.read().blocks as BlockId => {
+                return_errno!(EINVAL, "invalid file block id")
+            }
+            id if id < MAX_NBLOCK_DIRECT => {
+                self.disk_inode.write().direct[id] = device_block_id as u32;
+                Ok(())
+            }
+            id if id < MAX_NBLOCK_INDIRECT => {
+                let device_block_id = device_block_id as u32;
+                self.fs
+                    .inner()
+                    .device
+                    .store_struct::<u32>(
+                        self.disk_inode.read().indirect as BlockId,
+                        ENTRY_SIZE * (id - NDIRECT),
+                        &device_block_id,
+                    )
+                    .await?;
+                Ok(())
+            }
+            id if id < MAX_NBLOCK_DOUBLE_INDIRECT => {
+                // double indirect
+                let indirect_id = id - MAX_NBLOCK_INDIRECT;
+                let indirect_block_id = self
+                    .fs
+                    .inner()
+                    .device
+                    .load_struct::<u32>(
+                        self.disk_inode.read().db_indirect as BlockId,
+                        ENTRY_SIZE * (indirect_id / BLK_NENTRY),
+                    )
+                    .await?;
+                assert!(indirect_block_id > 0);
+                let device_block_id = device_block_id as u32;
+                self.fs
+                    .inner()
+                    .device
+                    .store_struct::<u32>(
+                        indirect_block_id as BlockId,
+                        ENTRY_SIZE * (indirect_id as usize % BLK_NENTRY),
+                        &device_block_id,
+                    )
+                    .await?;
+                Ok(())
+            }
+            _ => unimplemented!("triple indirect blocks is not supported"),
+        }
+    }
+
+    /// Only for Dir
+    async fn get_file_inode_and_entry_id(&self, name: &str) -> Option<(InodeId, usize)> {
+        for i in 0..self.disk_inode.read().size as usize / DIRENT_SIZE {
+            let entry = self.read_direntry(i).await.unwrap();
+            if entry.name.as_ref() == name {
+                return Some((entry.id as InodeId, i));
+            }
+        }
+        None
+    }
+
+    async fn get_file_inode_id(&self, name: &str) -> Option<InodeId> {
+        self.get_file_inode_and_entry_id(name)
+            .await
+            .map(|(inode_id, _)| inode_id)
+    }
+
+    /// Init dir content. Insert 2 init entries.
+    /// This do not init nlinks, please modify the nlinks in the invoker.
+    async fn init_direntry(&self, parent: InodeId) -> Result<()> {
+        // Insert entries: '.' '..'
+        self._resize(DIRENT_SIZE * 2).await?;
+        self.write_direntry(
+            0,
+            &DiskEntry {
+                id: self.id as u32,
+                name: Str256::from("."),
+            },
+        )
+        .await?;
+        self.write_direntry(
+            1,
+            &DiskEntry {
+                id: parent as u32,
+                name: Str256::from(".."),
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn read_direntry(&self, id: usize) -> Result<DiskEntry> {
+        let mut direntry: DiskEntry = unsafe { MaybeUninit::uninit().assume_init() };
+        self._read_at(DIRENT_SIZE * id, direntry.as_buf_mut())
+            .await?;
+        Ok(direntry)
+    }
+
+    async fn write_direntry(&self, id: usize, direntry: &DiskEntry) -> Result<()> {
+        self._write_at(DIRENT_SIZE * id, direntry.as_buf()).await?;
+        Ok(())
+    }
+
+    async fn append_direntry(&self, direntry: &DiskEntry) -> Result<()> {
+        let size = self.disk_inode.read().size as usize;
+        let dirent_count = size / DIRENT_SIZE;
+        self._resize(size + DIRENT_SIZE).await?;
+        self.write_direntry(dirent_count, direntry).await?;
+        Ok(())
+    }
+
+    /// remove a direntry in middle of file and insert the last one here, useful for direntry remove
+    /// should be only used in unlink
+    async fn remove_direntry(&self, id: usize) -> Result<()> {
+        let size = self.disk_inode.read().size as usize;
+        let dirent_count = size / DIRENT_SIZE;
+        debug_assert!(id < dirent_count);
+        let last_dirent = self.read_direntry(dirent_count - 1).await?;
+        self.write_direntry(id, &last_dirent).await?;
+        self._resize(size - DIRENT_SIZE).await?;
+        Ok(())
+    }
+
+    /// Resize content size, no matter what type it is
+    async fn _resize(&self, len: usize) -> Result<()> {
+        if len > MAX_FILE_SIZE {
+            return_errno!(EINVAL, "size too big");
+        }
+        let blocks = (len + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        if blocks > MAX_NBLOCK_DOUBLE_INDIRECT {
+            return_errno!(EINVAL, "size too big");
+        }
+        use core::cmp::Ordering;
+        let old_blocks = self.disk_inode.read().blocks as usize;
+        match blocks.cmp(&old_blocks) {
+            Ordering::Equal => {
+                self.disk_inode.write().size = len as u32;
+            }
+            Ordering::Greater => {
+                let mut disk_inode = self.disk_inode.write();
+                disk_inode.blocks = blocks as u32;
+                // allocate indirect block if needed
+                if old_blocks < MAX_NBLOCK_DIRECT && blocks >= MAX_NBLOCK_DIRECT {
+                    disk_inode.indirect = self.fs.inner().alloc_block().expect("no space") as u32;
+                }
+                // allocate double indirect block if needed
+                if blocks >= MAX_NBLOCK_INDIRECT {
+                    if disk_inode.db_indirect == 0 {
+                        disk_inode.db_indirect =
+                            self.fs.inner().alloc_block().expect("no space") as u32;
+                    }
+                    let indirect_begin = {
+                        if old_blocks < MAX_NBLOCK_INDIRECT {
+                            0
+                        } else {
+                            (old_blocks - MAX_NBLOCK_INDIRECT) / BLK_NENTRY + 1
+                        }
+                    };
+                    let indirect_end = (blocks - MAX_NBLOCK_INDIRECT) / BLK_NENTRY + 1;
+                    for i in indirect_begin..indirect_end {
+                        let indirect = self.fs.inner().alloc_block().expect("no space") as u32;
+                        self.fs
+                            .inner()
+                            .device
+                            .store_struct::<u32>(
+                                disk_inode.db_indirect as BlockId,
+                                ENTRY_SIZE * i,
+                                &indirect,
+                            )
+                            .await?;
+                    }
+                }
+                drop(disk_inode);
+                // allocate extra blocks
+                for file_block_id in old_blocks..blocks {
+                    let device_block_id = self.fs.inner().alloc_block().expect("no space");
+                    self.set_device_block_id(file_block_id, device_block_id)
+                        .await?;
+                }
+                // clean up
+                let mut disk_inode = self.disk_inode.write();
+                let old_size = disk_inode.size as usize;
+                disk_inode.size = len as u32;
+                drop(disk_inode);
+                //self._clean_at(old_size, len).await?;
+            }
+            Ordering::Less => {
+                // free extra blocks
+                for file_block_id in blocks..old_blocks {
+                    let device_block_id = self.get_device_block_id(file_block_id).await?;
+                    self.fs.inner().free_block(device_block_id);
+                }
+                let mut disk_inode = self.disk_inode.write();
+                // free indirect block if needed
+                if blocks < MAX_NBLOCK_DIRECT && old_blocks >= MAX_NBLOCK_DIRECT {
+                    self.fs.inner().free_block(disk_inode.indirect as BlockId);
+                    disk_inode.indirect = 0;
+                }
+                // free double indirect block if needed
+                if old_blocks >= MAX_NBLOCK_INDIRECT {
+                    let indirect_begin = {
+                        if blocks < MAX_NBLOCK_INDIRECT {
+                            0
+                        } else {
+                            (blocks - MAX_NBLOCK_INDIRECT) / BLK_NENTRY + 1
+                        }
+                    };
+                    let indirect_end = (old_blocks - MAX_NBLOCK_INDIRECT) / BLK_NENTRY + 1;
+                    for i in indirect_begin..indirect_end {
+                        let indirect = self
+                            .fs
+                            .inner()
+                            .device
+                            .load_struct::<u32>(disk_inode.db_indirect as BlockId, ENTRY_SIZE * i)
+                            .await?;
+                        assert!(indirect > 0);
+                        self.fs.inner().free_block(indirect as BlockId);
+                    }
+                    if blocks < MAX_NBLOCK_INDIRECT {
+                        assert!(disk_inode.db_indirect > 0);
+                        self.fs
+                            .inner()
+                            .free_block(disk_inode.db_indirect as BlockId);
+                        disk_inode.db_indirect = 0;
+                    }
+                }
+                disk_inode.blocks = blocks as u32;
+                disk_inode.size = len as u32;
+            }
+        }
+        Ok(())
+    }
+
+    /// Read content, no matter what type it is
+    async fn _read_at(&self, offset: usize, buf: &mut [u8]) -> Result<usize> {
+        let file_size = self.disk_inode.read().size as usize;
+        let iter = BlockRangeIter {
+            begin: file_size.min(offset),
+            end: file_size.min(offset + buf.len()),
+            block_size: BLOCK_SIZE,
+        };
+
+        let mut read_len = 0;
+        for range in iter {
+            let device_block_id = self.get_device_block_id(range.block_id).await?;
+            let device_offset = device_block_id * BLOCK_SIZE + range.begin;
+            let len = self
+                .fs
+                .inner()
+                .device
+                .read(device_offset, &mut buf[read_len..read_len + range.len()])
+                .await?;
+            debug_assert!(len == range.len());
+            read_len += len;
+        }
+
+        Ok(read_len)
+    }
+
+    /// Write content, no matter what type it is
+    async fn _write_at(&self, offset: usize, buf: &[u8]) -> Result<usize> {
+        let file_size = self.disk_inode.read().size as usize;
+        let iter = BlockRangeIter {
+            begin: file_size.min(offset),
+            end: file_size.min(offset + buf.len()),
+            block_size: BLOCK_SIZE,
+        };
+
+        let mut write_len = 0;
+        for range in iter {
+            let device_block_id = self.get_device_block_id(range.block_id).await?;
+            let device_offset = device_block_id * BLOCK_SIZE + range.begin;
+            let len = self
+                .fs
+                .inner()
+                .device
+                .write(device_offset, &buf[write_len..write_len + range.len()])
+                .await?;
+            debug_assert!(len == range.len());
+            write_len += len;
+        }
+
+        Ok(write_len)
+    }
+
+    /// Clean content, no matter what type it is
+    /*fn _clean_at(&self, begin: usize, end: usize) -> Result<usize> {
+        static ZEROS: [u8; BLKSIZE] = [0; BLKSIZE];
+        self._io_at(begin, end, |device, range, _| {
+            device.write_block(range.block, range.begin, &ZEROS[..range.len()])
+        })
+    }*/
+
+    fn nlinks_inc(&self) {
+        self.disk_inode.write().nlinks += 1;
+    }
+
+    fn nlinks_dec(&self) {
+        let mut disk_inode = self.disk_inode.write();
+        assert!(disk_inode.nlinks > 0);
+        disk_inode.nlinks -= 1;
+    }
+
+    async fn sync_metadata(&self) -> Result<()> {
+        let mut disk_inode = self.disk_inode.write();
+        if disk_inode.dirty() {
+            self.fs
+                .inner()
+                .device
+                .store_struct::<DiskInode>(self.id, 0, &disk_inode)
+                .await?;
+            disk_inode.sync();
+        }
+        Ok(())
+    }
+
+    pub async fn async_drop(&self) -> Result<()> {
+        self.sync_metadata().await?;
+        if self.disk_inode.read().nlinks == 0 {
+            self._resize(0).await?;
+            self.disk_inode.write().sync();
+            self.fs.inner().free_block(self.id);
+        }
+        Ok(())
+    }
+}
+
+/// Async Simple Filesystem
+pub struct AsyncSimpleFS(Option<FsInner>);
+
+impl AsyncSimpleFS {
+    /// Load SFS from the existing block device
+    pub async fn open(device: Arc<dyn BlockDevice>) -> Result<Arc<Self>> {
+        // Load the superblock
+        let super_block = device.load_struct::<SuperBlock>(BLKN_SUPER, 0).await?;
+        if !super_block.check() {
+            return_errno!(EINVAL, "wrong fs super block");
+        }
+        // Load the freemap
+        let mut freemap_disk = vec![0u8; BLOCK_SIZE * super_block.freemap_blocks as usize];
+        device
+            .read(BLKN_FREEMAP * BLOCK_SIZE, freemap_disk.as_mut_slice())
+            .await?;
+
+        Ok(Self(Some(FsInner {
+            super_block: RwLock::new(Dirty::new(super_block)),
+            free_map: RwLock::new(Dirty::new(BitVec::from(freemap_disk.as_slice()))),
+            inodes: RwLock::new(BTreeMap::new()),
+            device,
+            self_ptr: Weak::default(),
+        }))
+        .wrap())
+    }
+
+    /// Create a new SFS on blank disk
+    pub async fn create(device: Arc<dyn BlockDevice>) -> Result<Arc<Self>> {
+        let space = device.total_bytes();
+        let blocks = (space + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        let freemap_blocks = (space + BLKBITS * BLOCK_SIZE - 1) / BLKBITS / BLOCK_SIZE;
+        assert!(blocks >= 16, "space too small");
+
+        let super_block = SuperBlock {
+            magic: SFS_MAGIC,
+            blocks: blocks as u32,
+            unused_blocks: (blocks - BLKN_FREEMAP - freemap_blocks) as u32,
+            info: Str32::from(DEFAULT_INFO),
+            freemap_blocks: freemap_blocks as u32,
+        };
+        let free_map = {
+            let mut bitset = BitVec::with_capacity(freemap_blocks * BLKBITS);
+            bitset.extend(core::iter::repeat(false).take(freemap_blocks * BLKBITS));
+            for i in (BLKN_FREEMAP + freemap_blocks)..blocks {
+                bitset.set(i, true);
+            }
+            bitset
+        };
+
+        let sfs = Self(Some(FsInner {
+            super_block: RwLock::new(Dirty::new_dirty(super_block)),
+            free_map: RwLock::new(Dirty::new_dirty(free_map)),
+            inodes: RwLock::new(BTreeMap::new()),
+            device,
+            self_ptr: Weak::default(),
+        }))
+        .wrap();
+
+        // Init root INode
+        let root = sfs
+            .inner()
+            ._new_inode(BLKN_ROOT, Dirty::new_dirty(DiskInode::new_dir()));
+        root.inner().init_direntry(BLKN_ROOT).await?;
+        root.inner().nlinks_inc(); //for .
+        root.inner().nlinks_inc(); //for ..(root's parent is itself)
+        sfs.inner().sync_all().await?;
+
+        Ok(sfs)
+    }
+
+    /// Wrap pure AsyncSimpleFS with Arc
+    /// Private used in constructors
+    fn wrap(self) -> Arc<Self> {
+        // Create an Arc, make a Weak from it, then put it into the struct.
+        // It's a little tricky.
+        let fs = Arc::new(self);
+        let weak = Arc::downgrade(&fs);
+        let ptr = Arc::into_raw(fs) as *mut Self;
+        unsafe {
+            (*ptr).0.as_mut().unwrap().self_ptr = weak;
+        }
+        unsafe { Arc::from_raw(ptr) }
+    }
+
+    pub(crate) fn inner(&self) -> &FsInner {
+        debug_assert!(self.0.is_some());
+        self.0.as_ref().unwrap()
+    }
+}
+
+#[async_trait]
+impl AsyncFileSystem for AsyncSimpleFS {
+    async fn sync(&self) -> Result<()> {
+        Ok(self.inner().sync_all().await?)
+    }
+
+    async fn root_inode(&self) -> Arc<dyn AsyncInode> {
+        let inode = self.inner().get_inode(BLKN_ROOT).await;
+        inode
+    }
+
+    fn info(&self) -> FsInfo {
+        let sb = self.inner().super_block.read();
+        FsInfo {
+            magic: sb.magic as usize,
+            bsize: BLOCK_SIZE,
+            frsize: BLOCK_SIZE,
+            blocks: sb.blocks as usize,
+            bfree: sb.unused_blocks as usize,
+            bavail: sb.unused_blocks as usize,
+            files: sb.blocks as usize,        // inaccurate
+            ffree: sb.unused_blocks as usize, // inaccurate
+            namemax: MAX_FNAME_LEN,
+        }
+    }
+}
+
+impl Drop for AsyncSimpleFS {
+    /// Auto sync when drop
+    fn drop(&mut self) {
+        let fs_inner = self.0.take().unwrap();
+        async_rt::task::spawn(async move {
+            fs_inner
+                .sync_all()
+                .await
+                .expect("Failed to sync when dropping the AsyncSimpleFS");
+        });
+    }
+}
+
+/// Inner for AsyncSimpleFS
+pub(crate) struct FsInner {
+    /// on-disk superblock
+    super_block: RwLock<Dirty<SuperBlock>>,
+    /// described the usage of blocks, the blocks in use are marked 0
+    free_map: RwLock<Dirty<BitVec<Lsb0, u8>>>,
+    /// inode list
+    inodes: RwLock<BTreeMap<InodeId, Weak<SFSInode>>>,
+    /// block device
+    device: Arc<dyn BlockDevice>,
+    /// pointer to self, used by inodes
+    self_ptr: Weak<AsyncSimpleFS>,
+}
+
+impl FsInner {
+    /// Allocate a free block, return block id
+    fn alloc_block(&self) -> Option<BlockId> {
+        let mut free_map = self.free_map.write();
+        let id = free_map.alloc();
+        if let Some(block_id) = id {
+            let mut super_block = self.super_block.write();
+            if super_block.unused_blocks == 0 {
+                free_map.set(block_id, true);
+                return None;
+            }
+            super_block.unused_blocks -= 1; // will not underflow
+            trace!("alloc block {:#x}", block_id);
+        } else {
+            let super_block = self.super_block.read();
+            panic!("failed to allocate block: {:?}", super_block)
+        }
+        id
+    }
+
+    /// Free a block
+    fn free_block(&self, block_id: BlockId) {
+        let mut free_map = self.free_map.write();
+        assert!(!free_map[block_id]);
+        free_map.set(block_id, true);
+        self.super_block.write().unused_blocks += 1;
+        trace!("free block {:#x}", block_id);
+    }
+
+    /// Create a new inode struct, then insert it to inode caches
+    /// Private used for load or create inode
+    fn _new_inode(&self, id: InodeId, disk_inode: Dirty<DiskInode>) -> Arc<SFSInode> {
+        let inode = {
+            let inode_inner = InodeInner {
+                id,
+                disk_inode: RwLock::new(disk_inode),
+                fs: self.self_ptr.upgrade().unwrap(),
+            };
+            Arc::new(SFSInode(Some(inode_inner)))
+        };
+        self.inodes.write().insert(id, Arc::downgrade(&inode));
+        inode
+    }
+
+    /// Get inode by id. Load if not in memory.
+    /// ** Must ensure it's a valid INode **
+    async fn get_inode(&self, id: InodeId) -> Arc<SFSInode> {
+        assert!(!self.free_map.read()[id]);
+
+        // In the cache and not weak.
+        if let Some(inode) = self.inodes.read().get(&id) {
+            if let Some(inode) = inode.upgrade() {
+                return inode;
+            }
+        }
+        // Load if not in cache, or is weak ref.
+        let disk_inode = self.device.load_struct::<DiskInode>(id, 0).await.unwrap();
+        self._new_inode(id, Dirty::new(disk_inode))
+    }
+
+    /// Create a new INode file
+    fn new_inode_file(&self) -> Result<Arc<SFSInode>> {
+        let id = self.alloc_block().ok_or(errno!(EIO, "no device space"))?;
+        let disk_inode = Dirty::new_dirty(DiskInode::new_file());
+        Ok(self._new_inode(id, disk_inode))
+    }
+
+    /// Create a new INode symlink
+    fn new_inode_symlink(&self) -> Result<Arc<SFSInode>> {
+        let id = self.alloc_block().ok_or(errno!(EIO, "no device space"))?;
+        let disk_inode = Dirty::new_dirty(DiskInode::new_symlink());
+        Ok(self._new_inode(id, disk_inode))
+    }
+
+    /// Create a new INode dir
+    async fn new_inode_dir(&self, parent: InodeId) -> Result<Arc<SFSInode>> {
+        let id = self.alloc_block().ok_or(errno!(EIO, "no device space"))?;
+        let disk_inode = Dirty::new_dirty(DiskInode::new_dir());
+        let inode = self._new_inode(id, disk_inode);
+        inode.inner().init_direntry(parent).await?;
+        Ok(inode)
+    }
+
+    fn clear_weak_inodes(&self) {
+        let mut inodes_map = self.inodes.write();
+        inodes_map.retain(|_, inode| inode.upgrade().is_some());
+    }
+
+    async fn sync_metadata(&self) -> Result<()> {
+        let mut free_map = self.free_map.write();
+        if free_map.dirty() {
+            self.device
+                .write(BLKN_FREEMAP * BLOCK_SIZE, free_map.as_buf())
+                .await?;
+            free_map.sync();
+        }
+        let mut super_block = self.super_block.write();
+        if super_block.dirty() {
+            self.device
+                .store_struct::<SuperBlock>(BLKN_SUPER, 0, &super_block)
+                .await?;
+            super_block.sync();
+        }
+        Ok(())
+    }
+
+    async fn sync_all(&self) -> Result<()> {
+        self.clear_weak_inodes();
+        for inode in self.inodes.read().values() {
+            if let Some(inode) = inode.upgrade() {
+                inode.sync_all().await?;
+            }
+        }
+        // writeback freemap and superblock
+        self.sync_metadata().await?;
+        // flush to device
+        self.device.flush().await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+trait DeviceStructExt {
+    /// Load struct `T` from given block and offset in device
+    async fn load_struct<T: Sync + Send + AsBuf>(&self, id: BlockId, offset: usize) -> Result<T>;
+    /// Store struct `T` to given block and offset in device
+    async fn store_struct<T: Sync + Send + AsBuf>(
+        &self,
+        id: BlockId,
+        offset: usize,
+        s: &T,
+    ) -> Result<()>;
+}
+
+#[async_trait]
+impl DeviceStructExt for dyn BlockDevice {
+    async fn load_struct<T: Sync + Send + AsBuf>(&self, id: BlockId, offset: usize) -> Result<T> {
+        let mut s: T = unsafe { MaybeUninit::uninit().assume_init() };
+        let s_mut_buf = s.as_buf_mut();
+        debug_assert!(offset + s_mut_buf.len() <= BLOCK_SIZE);
+        let len = self.read(id * BLOCK_SIZE + offset, s_mut_buf).await?;
+        debug_assert!(len == s_mut_buf.len());
+        Ok(s)
+    }
+
+    async fn store_struct<T: Sync + Send + AsBuf>(
+        &self,
+        id: BlockId,
+        offset: usize,
+        s: &T,
+    ) -> Result<()> {
+        let s_buf = s.as_buf();
+        debug_assert!(offset + s_buf.len() <= BLOCK_SIZE);
+        let len = self.write(id * BLOCK_SIZE + offset, s_buf).await?;
+        debug_assert!(len == s_buf.len());
+        Ok(())
+    }
+}
+
+trait BitsetAlloc {
+    fn alloc(&mut self) -> Option<usize>;
+}
+
+impl BitsetAlloc for BitVec<Lsb0, u8> {
+    fn alloc(&mut self) -> Option<usize> {
+        // TODO: more efficient
+        let id = (0..self.len()).find(|&i| self[i]);
+        if let Some(id) = id {
+            self.set(id, false);
+        }
+        id
+    }
+}
+
+impl AsBuf for BitVec<Lsb0, u8> {
+    fn as_buf(&self) -> &[u8] {
+        self.as_ref()
+    }
+    fn as_buf_mut(&mut self) -> &mut [u8] {
+        self.as_mut()
+    }
+}
