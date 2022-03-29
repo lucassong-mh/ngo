@@ -4,6 +4,7 @@ members = [
     "async-rt",
     "async-io",
     "async-vfs",
+    "async-sfs",
     "block-device",
     "inherit-methods-macro",
     "errno",
