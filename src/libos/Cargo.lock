@@ -9,6 +9,9 @@ dependencies = [
  "aligned",
  "async-io",
  "async-rt",
+ "async-sfs",
+ "async-vfs",
+ "async_once",
  "atomic",
  "bitflags",
  "bitvec",
@@ -123,6 +126,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-sfs"
+version = "0.1.0"
+dependencies = [
+ "async-io",
+ "async-rt",
+ "async-trait",
+ "async-vfs",
+ "bitvec",
+ "block-device",
+ "cfg-if 1.0.0",
+ "errno",
+ "libc",
+ "log",
+ "sgx_libc",
+ "sgx_trts",
+ "sgx_tstd",
+ "sgx_types",
+ "spin 0.7.0",
+ "static_assertions 0.3.4",
+]
+
+[[package]]
 name = "async-trait"
 version = "0.1.52"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -131,6 +156,30 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "async-vfs"
+version = "0.1.0"
+dependencies = [
+ "async-io",
+ "async-rt",
+ "async-trait",
+ "errno",
+ "libc",
+ "log",
+ "sgx_libc",
+ "sgx_trts",
+ "sgx_tstd",
+ "sgx_types",
+ "spin 0.7.0",
+]
+
+[[package]]
+name = "async_once"
+version = "0.2.6"
+dependencies = [
+ "sgx_tstd",
 ]
 
 [[package]]

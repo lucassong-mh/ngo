@@ -17,6 +17,9 @@ pub fn do_fallocate(fd: FileDesc, flags: FallocateFlags, offset: usize, len: usi
         // do nothing
         warn!("disk_file does not support fallocate");
         Ok(())
+    } else if let Some(async_file_handle) = file_ref.as_async_file_handle() {
+        warn!("async inode do not support fallocate");
+        Ok(())
     } else {
         return_errno!(EBADF, "not supported");
     }

@@ -78,8 +78,10 @@ pub fn load_file_hdr_to_vec(
         .fs()
         .read()
         .unwrap()
-        .lookup_inode(&FsPath::try_from(file_path)?)
-        .map_err(|e| errno!(e.errno(), "cannot find the file"))?;
+        .lookup_inode_sync(&FsPath::try_from(file_path)?)
+        .map_err(|e| errno!(e.errno(), "cannot find the file"))?
+        .as_sync()
+        .unwrap();
 
     // Make sure the final file to exec is not a directory
     let metadata = inode.metadata()?;

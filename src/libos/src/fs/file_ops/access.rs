@@ -37,7 +37,7 @@ impl AccessibilityCheckFlags {
     }
 }
 
-pub fn do_faccessat(
+pub async fn do_faccessat(
     fs_path: &FsPath,
     mode: AccessibilityCheckMode,
     flags: AccessibilityCheckFlags,
@@ -51,9 +51,9 @@ pub fn do_faccessat(
         let current = current!();
         let fs = current.fs().read().unwrap();
         if flags.contains(AccessibilityCheckFlags::AT_SYMLINK_NOFOLLOW) {
-            fs.lookup_inode_no_follow(fs_path)?
+            fs.lookup_inode_no_follow(fs_path).await?
         } else {
-            fs.lookup_inode(fs_path)?
+            fs.lookup_inode(fs_path).await?
         }
     };
 
