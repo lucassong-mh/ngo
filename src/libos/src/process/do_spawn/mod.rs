@@ -397,14 +397,14 @@ fn init_files(
                     oflag,
                     fd,
                 } => {
-                    let inode_file = current_ref.fs().read().unwrap().open_file(
-                        &FsPath::try_from(path.as_str())?,
-                        oflag,
-                        FileMode::from_bits_truncate(mode as u16),
-                    )?;
-                    let file_ref = FileRef::new_inode(inode_file);
-                    let creation_flags = CreationFlags::from_bits_truncate(oflag);
-                    cloned_file_table.put_at(fd, file_ref, creation_flags.must_close_on_spawn());
+                    // let inode_file = current_ref.fs().read().unwrap().open_file(
+                    //     &FsPath::try_from(path.as_str())?,z
+                    //     oflag,
+                    //     FileMode::from_bits_truncate(mode as u16),
+                    // )?;
+                    // let file_ref = FileRef::new_inode(inode_file);
+                    // let creation_flags = CreationFlags::from_bits_truncate(oflag);
+                    // cloned_file_table.put_at(fd, file_ref, creation_flags.must_close_on_spawn());
                 }
                 &FileAction::Dup2(old_fd, new_fd) => {
                     let file = cloned_file_table.get(old_fd)?;

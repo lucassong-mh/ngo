@@ -29,7 +29,7 @@ impl TrustedAddr {
     }
 
     // Bind the unix address with the inode of the FS
-    pub fn bind_addr(&mut self) -> Result<()> {
+    pub async fn bind_addr(&mut self) -> Result<()> {
         if let UnixAddr::Pathname(path) = &self.unix_addr {
             let inode_num = {
                 let current = current!();
@@ -40,6 +40,7 @@ impl TrustedAddr {
                         (CreationFlags::O_CREAT | CreationFlags::O_EXCL).bits(),
                         FileMode::from_bits(0o777).unwrap(),
                     )
+                    .await
                     .map_err(|e| {
                         if e.errno() == EEXIST {
                             errno!(EADDRINUSE)
@@ -47,33 +48,35 @@ impl TrustedAddr {
                             e
                         }
                     })?;
-                file_ref.inode().metadata()?.inode
+                file_ref.as_inode_file().unwrap().inode().metadata()?.inode
             };
             self.inode = Some(inode_num);
         }
         Ok(())
     }
 
-    pub fn bind_untrusted_addr(&mut self, host_addr: &UnixAddr) -> Result<()> {
+    pub async fn bind_untrusted_addr(&mut self, host_addr: &UnixAddr) -> Result<()> {
         if let UnixAddr::Pathname(path) = &self.unix_addr {
             let (dir_inode, sock_name) = {
                 let current = current!();
                 let fs = current.fs().read().unwrap();
                 let path = FsPath::try_from(path.as_ref())?;
-                fs.lookup_dirinode_and_basename(&path)?
+                fs.lookup_dirinode_and_basename(&path).await?
             };
 
-            if !dir_inode.allow_write()? {
+            if !dir_inode.allow_write() {
                 return_errno!(EPERM, "libos socket file cannot be created");
             }
 
             info!("sock name = {:?}", sock_name);
-            let socket_inode = dir_inode.create(&sock_name, FileType::Socket, 0o0777)?;
+            let socket_inode = dir_inode
+                .create(&sock_name, FileType::Socket, 0o0777)
+                .await?;
             let data = host_addr.get_path_name()?.as_bytes();
             info!("data = {:?}", data);
-            socket_inode.resize(data.len())?;
+            socket_inode.resize(data.len()).await?;
             info!("here");
-            socket_inode.write_at(0, data)?;
+            socket_inode.write_at(0, data).await?;
         }
         Ok(())
     }

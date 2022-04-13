@@ -32,3 +32,6 @@
 [submodule "deps/resolv-conf"]
 	path = deps/resolv-conf
 	url = https://github.com/tailhook/resolv-conf.git
+[submodule "deps/async_once"]
+	path = deps/async_once
+	url = https://github.com/liqinggd/async_once.git

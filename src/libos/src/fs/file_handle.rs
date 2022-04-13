@@ -38,11 +38,12 @@ struct Inner {
 #[derive(Clone, Debug)]
 enum AnyFile {
     File(Arc<Async<dyn File>>),
-    Inode(Arc<AsyncInode>),
+    Inode(Arc<AsyncInodeFile>),
     Socket(Arc<SocketFile>),
     Epoll(Arc<EpollFile>),
     Timer(Arc<TimerFile>),
     Disk(Arc<DiskFile>),
+    AsyncFileHandle(Arc<AsyncFileHandle>),
 }
 
 // Apply a function all variants of AnyFile enum.
@@ -68,6 +69,9 @@ macro_rules! apply_fn_on_any_file {
             AnyFile::Disk($file) => {
                 $($fn_body)*
             }
+            AnyFile::AsyncFileHandle($file) => {
+                $($fn_body)*
+            }
         }
     }}
 }
@@ -84,7 +88,7 @@ impl FileHandle {
 
     /// Create a file handle for an inode file.
     pub fn new_inode(file: InodeFile) -> Self {
-        let any_file = AnyFile::Inode(Arc::new(AsyncInode::new(file)));
+        let any_file = AnyFile::Inode(Arc::new(AsyncInodeFile::new(file)));
         Self::new(any_file)
     }
 
@@ -109,6 +113,11 @@ impl FileHandle {
     /// Create a file handle for a disk file.
     pub fn new_disk(file: Arc<DiskFile>) -> Self {
         let any_file = AnyFile::Disk(file);
+        Self::new(any_file)
+    }
+
+    pub fn new_async_file_handle(file: AsyncFileHandle) -> Self {
+        let any_file = AnyFile::AsyncFileHandle(Arc::new(file));
         Self::new(any_file)
     }
 
@@ -218,6 +227,13 @@ impl FileHandle {
         }
     }
 
+    pub fn as_async_file_handle(&self) -> Option<&AsyncFileHandle> {
+        match &self.0.file {
+            AnyFile::AsyncFileHandle(async_file_handle) => Some(async_file_handle),
+            _ => None,
+        }
+    }
+
     /// Downgrade the file handle to its weak counterpart.
     pub fn downgrade(&self) -> WeakFileHandle {
         let any_weak_file = match &self.0.file {
@@ -227,6 +243,7 @@ impl FileHandle {
             AnyFile::Epoll(file) => AnyWeakFile::Epoll(Arc::downgrade(file)),
             AnyFile::Timer(file) => AnyWeakFile::Timer(Arc::downgrade(file)),
             AnyFile::Disk(file) => AnyWeakFile::Disk(Arc::downgrade(file)),
+            AnyFile::AsyncFileHandle(file) => AnyWeakFile::AsyncFileHandle(Arc::downgrade(file)),
         };
         WeakFileHandle(any_weak_file)
     }
@@ -245,6 +262,10 @@ impl PartialEq for FileHandle {
             Arc::as_ptr(self_timer) == Arc::as_ptr(other_timer)
         } else if let (AnyFile::Disk(self_disk), AnyFile::Disk(other_disk)) = rhs {
             Arc::as_ptr(self_disk) == Arc::as_ptr(other_disk)
+        } else if let (AnyFile::AsyncFileHandle(self_file), AnyFile::AsyncFileHandle(other_file)) =
+            rhs
+        {
+            Arc::as_ptr(self_file) == Arc::as_ptr(other_file)
         } else {
             false
         }
@@ -253,11 +274,11 @@ impl PartialEq for FileHandle {
 
 /// A wrapper that makes `InodeFile`'s methods _async_.
 #[derive(Debug)]
-struct AsyncInode(InodeFile);
+struct AsyncInodeFile(InodeFile);
 
 #[inherit_methods(from = "self.0")]
 #[rustfmt::skip]
-impl AsyncInode {
+impl AsyncInodeFile {
     pub fn new(inode: InodeFile) -> Self {
         Self(inode)
     }
@@ -294,11 +315,12 @@ pub struct WeakFileHandle(AnyWeakFile);
 #[derive(Clone, Debug)]
 enum AnyWeakFile {
     File(Weak<Async<dyn File>>),
-    Inode(Weak<AsyncInode>),
+    Inode(Weak<AsyncInodeFile>),
     Socket(Weak<SocketFile>),
     Epoll(Weak<EpollFile>),
     Timer(Weak<TimerFile>),
     Disk(Weak<DiskFile>),
+    AsyncFileHandle(Weak<AsyncFileHandle>),
 }
 
 impl WeakFileHandle {
@@ -323,6 +345,9 @@ impl WeakFileHandle {
             AnyWeakFile::Disk(weak) => weak
                 .upgrade()
                 .map(|arc| FileHandle::new(AnyFile::Disk(arc))),
+            AnyWeakFile::AsyncFileHandle(weak) => weak
+                .upgrade()
+                .map(|arc| FileHandle::new(AnyFile::AsyncFileHandle(arc))),
         }
     }
 }
@@ -340,6 +365,12 @@ impl PartialEq for WeakFileHandle {
             self_timer.ptr_eq(&other_timer)
         } else if let (AnyWeakFile::Disk(self_disk), AnyWeakFile::Disk(other_disk)) = rhs {
             self_disk.ptr_eq(&other_disk)
+        } else if let (
+            AnyWeakFile::AsyncFileHandle(self_file),
+            AnyWeakFile::AsyncFileHandle(other_file),
+        ) = rhs
+        {
+            self_file.ptr_eq(&other_file)
         } else {
             false
         }

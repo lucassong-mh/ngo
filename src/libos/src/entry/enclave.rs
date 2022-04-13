@@ -128,9 +128,9 @@ pub extern "C" fn occlum_ecall_init(
         }
         Ok(resolv_conf_str) => {
             *RESOLV_CONF_STR.write().unwrap() = Some(resolv_conf_str);
-            if let Err(e) = write_host_file(HostFile::RESOLV_CONF) {
-                error!("failed to write /etc/resolv.conf: {}", e.backtrace());
-            }
+            // if let Err(e) = write_host_file(HostFile::RESOLV_CONF) {
+            //     error!("failed to write /etc/resolv.conf: {}", e.backtrace());
+            // }
         }
     }
 
@@ -142,9 +142,9 @@ pub extern "C" fn occlum_ecall_init(
         Ok(hostname_str) => {
             misc::init_nodename(&hostname_str);
             *HOSTNAME_STR.write().unwrap() = Some(hostname_str);
-            if let Err(e) = write_host_file(HostFile::HOSTNAME) {
-                error!("failed to write /etc/hostname: {}", e.backtrace());
-            }
+            // if let Err(e) = write_host_file(HostFile::HOSTNAME) {
+            //     error!("failed to write /etc/hostname: {}", e.backtrace());
+            // }
         }
     }
 
@@ -155,9 +155,9 @@ pub extern "C" fn occlum_ecall_init(
         }
         Ok(hosts_str) => {
             *HOSTS_STR.write().unwrap() = Some(hosts_str);
-            if let Err(e) = write_host_file(HostFile::HOSTS) {
-                error!("failed to write /etc/hosts: {}", e.backtrace());
-            }
+            // if let Err(e) = write_host_file(HostFile::HOSTS) {
+            //     error!("failed to write /etc/hosts: {}", e.backtrace());
+            // }
         }
     }
 
