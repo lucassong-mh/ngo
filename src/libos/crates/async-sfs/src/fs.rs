@@ -1,3 +1,4 @@
+use crate::cache::SFSCache;
 use crate::prelude::*;
 use crate::structs::*;
 use crate::utils::{BlockRangeIter, Dirty};
@@ -385,7 +386,7 @@ impl InodeInner {
                 let device_block_id = self
                     .fs()
                     .inner()
-                    .device
+                    .storage
                     .load_struct::<u32>(disk_inode.indirect as BlockId, ENTRY_SIZE * (id - NDIRECT))
                     .await?;
                 device_block_id
@@ -396,7 +397,7 @@ impl InodeInner {
                 let indirect_block_id = self
                     .fs()
                     .inner()
-                    .device
+                    .storage
                     .load_struct::<u32>(
                         disk_inode.db_indirect as BlockId,
                         ENTRY_SIZE * (indirect_id / BLK_NENTRY),
@@ -406,7 +407,7 @@ impl InodeInner {
                 let device_block_id = self
                     .fs()
                     .inner()
-                    .device
+                    .storage
                     .load_struct::<u32>(
                         indirect_block_id as BlockId,
                         ENTRY_SIZE * (indirect_id as usize % BLK_NENTRY),
@@ -438,7 +439,7 @@ impl InodeInner {
                 let device_block_id = device_block_id as u32;
                 self.fs()
                     .inner()
-                    .device
+                    .storage
                     .store_struct::<u32>(
                         self.disk_inode.read().indirect as BlockId,
                         ENTRY_SIZE * (id - NDIRECT),
@@ -453,7 +454,7 @@ impl InodeInner {
                 let indirect_block_id = self
                     .fs()
                     .inner()
-                    .device
+                    .storage
                     .load_struct::<u32>(
                         self.disk_inode.read().db_indirect as BlockId,
                         ENTRY_SIZE * (indirect_id / BLK_NENTRY),
@@ -463,7 +464,7 @@ impl InodeInner {
                 let device_block_id = device_block_id as u32;
                 self.fs()
                     .inner()
-                    .device
+                    .storage
                     .store_struct::<u32>(
                         indirect_block_id as BlockId,
                         ENTRY_SIZE * (indirect_id as usize % BLK_NENTRY),
@@ -589,7 +590,7 @@ impl InodeInner {
                         let indirect = self.fs().inner().alloc_block().expect("no space") as u32;
                         self.fs()
                             .inner()
-                            .device
+                            .storage
                             .store_struct::<u32>(
                                 disk_inode.db_indirect as BlockId,
                                 ENTRY_SIZE * i,
@@ -638,7 +639,7 @@ impl InodeInner {
                         let indirect = self
                             .fs()
                             .inner()
-                            .device
+                            .storage
                             .load_struct::<u32>(disk_inode.db_indirect as BlockId, ENTRY_SIZE * i)
                             .await?;
                         assert!(indirect > 0);
@@ -671,12 +672,15 @@ impl InodeInner {
         let mut read_len = 0;
         for range in iter {
             let device_block_id = self.get_device_block_id(range.block_id).await?;
-            let device_offset = device_block_id * BLOCK_SIZE + range.begin;
             let len = self
                 .fs()
                 .inner()
-                .device
-                .read(device_offset, &mut buf[read_len..read_len + range.len()])
+                .storage
+                .read_at(
+                    device_block_id,
+                    &mut buf[read_len..read_len + range.len()],
+                    range.begin,
+                )
                 .await?;
             debug_assert!(len == range.len());
             read_len += len;
@@ -697,12 +701,15 @@ impl InodeInner {
         let mut write_len = 0;
         for range in iter {
             let device_block_id = self.get_device_block_id(range.block_id).await?;
-            let device_offset = device_block_id * BLOCK_SIZE + range.begin;
             let len = self
                 .fs()
                 .inner()
-                .device
-                .write(device_offset, &buf[write_len..write_len + range.len()])
+                .storage
+                .write_at(
+                    device_block_id,
+                    &buf[write_len..write_len + range.len()],
+                    range.begin,
+                )
                 .await?;
             debug_assert!(len == range.len());
             write_len += len;
@@ -740,7 +747,7 @@ impl InodeInner {
             let mut disk_inode = self.disk_inode.write();
             self.fs()
                 .inner()
-                .device
+                .storage
                 .store_struct::<DiskInode>(self.id, 0, &disk_inode)
                 .await?;
             disk_inode.sync();
@@ -755,22 +762,28 @@ pub struct AsyncSimpleFS(Option<FsInner>);
 impl AsyncSimpleFS {
     /// Load SFS from the existing block device
     pub async fn open(device: Arc<dyn BlockDevice>) -> Result<Arc<Self>> {
+        let device_storage = SFSStorage::from_device(device.clone());
         // Load the superblock
-        let super_block = device.load_struct::<SuperBlock>(BLKN_SUPER, 0).await?;
+        let super_block = device_storage
+            .load_struct::<SuperBlock>(BLKN_SUPER, 0)
+            .await?;
         if !super_block.check() {
             return_errno!(EINVAL, "wrong fs super block");
         }
         // Load the freemap
         let mut freemap_disk = vec![0u8; BLOCK_SIZE * super_block.freemap_blocks as usize];
-        device
-            .read(BLKN_FREEMAP * BLOCK_SIZE, freemap_disk.as_mut_slice())
+        device_storage
+            .read_at(BLKN_FREEMAP, freemap_disk.as_mut_slice(), 0)
             .await?;
 
         Ok(Self(Some(FsInner {
             super_block: RwLock::new(Dirty::new(super_block)),
             free_map: RwLock::new(Dirty::new(BitVec::from(freemap_disk.as_slice()))),
             inodes: RwLock::new(BTreeMap::new()),
-            device,
+            #[cfg(feature = "pagecache")]
+            storage: SFSStorage::from_page_cache(SFSCache::new(device).unwrap()),
+            #[cfg(not(feature = "pagecache"))]
+            storage: SFSStorage::from_device(device),
             self_ptr: Weak::default(),
         }))
         .wrap())
@@ -803,7 +816,10 @@ impl AsyncSimpleFS {
             super_block: RwLock::new(Dirty::new_dirty(super_block)),
             free_map: RwLock::new(Dirty::new_dirty(free_map)),
             inodes: RwLock::new(BTreeMap::new()),
-            device,
+            #[cfg(feature = "pagecache")]
+            storage: SFSStorage::from_page_cache(SFSCache::new(device).unwrap()),
+            #[cfg(not(feature = "pagecache"))]
+            storage: SFSStorage::from_device(device),
             self_ptr: Weak::default(),
         }))
         .wrap();
@@ -815,7 +831,8 @@ impl AsyncSimpleFS {
         root.inner().init_direntry(BLKN_ROOT).await?;
         root.inner().nlinks_inc(); //for .
         root.inner().nlinks_inc(); //for ..(root's parent is itself)
-        sfs.inner().sync_all().await?;
+        root.sync_all().await?;
+        sfs.inner().sync_metadata().await?;
 
         Ok(sfs)
     }
@@ -887,10 +904,12 @@ pub(crate) struct FsInner {
     super_block: RwLock<Dirty<SuperBlock>>,
     /// described the usage of blocks, the blocks in use are marked 0
     free_map: RwLock<Dirty<BitVec<Lsb0, u8>>>,
+    // TODO: Use LruCache to evict the least recently used inodes, and sync the metadata if dirty.
+    // e.g., LruCache<InodeId, Arc<SFSInode>>
     /// cached inodes
     inodes: RwLock<BTreeMap<InodeId, Arc<SFSInode>>>,
-    /// block device
-    device: Arc<dyn BlockDevice>,
+    /// underlying storage
+    storage: SFSStorage,
     /// pointer to self, used by inodes
     self_ptr: Weak<AsyncSimpleFS>,
 }
@@ -944,12 +963,12 @@ impl FsInner {
     async fn get_inode(&self, id: InodeId) -> Arc<SFSInode> {
         assert!(!self.free_map.read()[id]);
 
-        // In the cache.
+        // In the cache
         if let Some(inode) = self.inodes.read().get(&id) {
             return inode.clone();
         }
         // Load if not in cache
-        let disk_inode = self.device.load_struct::<DiskInode>(id, 0).await.unwrap();
+        let disk_inode = self.storage.load_struct::<DiskInode>(id, 0).await.unwrap();
         self._new_inode(id, Dirty::new(disk_inode))
     }
 
@@ -981,14 +1000,14 @@ impl FsInner {
         let super_block_dirty = self.super_block.read().dirty();
         if free_map_dirty {
             let mut free_map = self.free_map.write();
-            self.device
-                .write(BLKN_FREEMAP * BLOCK_SIZE, free_map.as_buf())
+            self.storage
+                .write_at(BLKN_FREEMAP, free_map.as_buf(), 0)
                 .await?;
             free_map.sync();
         }
         if super_block_dirty {
             let mut super_block = self.super_block.write();
-            self.device
+            self.storage
                 .store_struct::<SuperBlock>(BLKN_SUPER, 0, &super_block)
                 .await?;
             super_block.sync();
@@ -1005,35 +1024,43 @@ impl FsInner {
         // writeback freemap and superblock
         self.sync_metadata().await?;
         // flush to device
-        self.device.flush().await?;
+        self.storage.flush().await?;
         Ok(())
     }
 }
 
-#[async_trait]
-trait DeviceStructExt {
-    /// Load struct `T` from given block and offset in device
-    async fn load_struct<T: Sync + Send + AsBuf>(&self, id: BlockId, offset: usize) -> Result<T>;
-    /// Store struct `T` to given block and offset in device
-    async fn store_struct<T: Sync + Send + AsBuf>(
+enum SFSStorage {
+    Device(Arc<dyn BlockDevice>),
+    PageCache(SFSCache),
+}
+
+impl SFSStorage {
+    pub fn from_device(device: Arc<dyn BlockDevice>) -> Self {
+        Self::Device(device)
+    }
+
+    pub fn from_page_cache(cache: SFSCache) -> Self {
+        Self::PageCache(cache)
+    }
+
+    /// Load struct `T` from given block and offset in the storage
+    pub async fn load_struct<T: Sync + Send + AsBuf>(
         &self,
         id: BlockId,
         offset: usize,
-        s: &T,
-    ) -> Result<()>;
-}
-
-#[async_trait]
-impl DeviceStructExt for dyn BlockDevice {
-    async fn load_struct<T: Sync + Send + AsBuf>(&self, id: BlockId, offset: usize) -> Result<T> {
+    ) -> Result<T> {
         let mut s: T = unsafe { MaybeUninit::uninit().assume_init() };
         let s_mut_buf = s.as_buf_mut();
         debug_assert!(offset + s_mut_buf.len() <= BLOCK_SIZE);
-        let len = self.read(id * BLOCK_SIZE + offset, s_mut_buf).await?;
+        let len = match self {
+            Self::Device(device) => device.read(id * BLOCK_SIZE + offset, s_mut_buf).await?,
+            Self::PageCache(cache) => cache.read(id, s_mut_buf, offset).await?,
+        };
         debug_assert!(len == s_mut_buf.len());
         Ok(s)
     }
 
+    /// Store struct `T` to given block and offset in the storage
     async fn store_struct<T: Sync + Send + AsBuf>(
         &self,
         id: BlockId,
@@ -1042,9 +1069,45 @@ impl DeviceStructExt for dyn BlockDevice {
     ) -> Result<()> {
         let s_buf = s.as_buf();
         debug_assert!(offset + s_buf.len() <= BLOCK_SIZE);
-        let len = self.write(id * BLOCK_SIZE + offset, s_buf).await?;
+        let len = match self {
+            Self::Device(device) => device.write(id * BLOCK_SIZE + offset, s_buf).await?,
+            Self::PageCache(cache) => cache.write(id, s_buf, offset).await?,
+        };
         debug_assert!(len == s_buf.len());
         Ok(())
+    }
+
+    /// Read blocks starting from the offset of block into the given buffer.
+    async fn read_at(&self, id: BlockId, buf: &mut [u8], offset: usize) -> Result<usize> {
+        match self {
+            Self::Device(device) => {
+                let device_offset = id * BLOCK_SIZE + offset;
+                device.read(device_offset, buf).await
+            }
+            Self::PageCache(cache) => cache.read(id, buf, offset).await,
+        }
+    }
+
+    /// Write buffer at the blocks starting from the offset of block.
+    async fn write_at(&self, id: BlockId, buf: &[u8], offset: usize) -> Result<usize> {
+        match self {
+            Self::Device(device) => {
+                let device_offset = id * BLOCK_SIZE + offset;
+                device.write(device_offset, buf).await
+            }
+            Self::PageCache(cache) => cache.write(id, buf, offset).await,
+        }
+    }
+
+    /// Flush the buffer.
+    async fn flush(&self) -> Result<()> {
+        match self {
+            Self::Device(device) => device.flush().await,
+            Self::PageCache(cache) => {
+                cache.flush().await?;
+                Ok(())
+            }
+        }
     }
 }
 

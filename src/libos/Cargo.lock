@@ -139,6 +139,7 @@ dependencies = [
  "errno",
  "libc",
  "log",
+ "page-cache",
  "sgx_libc",
  "sgx_trts",
  "sgx_tstd",
@@ -721,6 +722,27 @@ dependencies = [
 [[package]]
 name = "object-id"
 version = "0.1.0"
+
+[[package]]
+name = "page-cache"
+version = "0.1.0"
+dependencies = [
+ "async-io",
+ "async-rt",
+ "async-trait",
+ "block-device",
+ "cfg-if 1.0.0",
+ "errno",
+ "lazy_static",
+ "libc",
+ "log",
+ "object-id",
+ "sgx_libc",
+ "sgx_trts",
+ "sgx_tstd",
+ "sgx_types",
+ "spin 0.7.0",
+]
 
 [[package]]
 name = "parking_lot"
