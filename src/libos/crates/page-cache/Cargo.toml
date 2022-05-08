@@ -1,0 +1,37 @@
+[package]
+name = "page-cache"
+version = "0.1.0"
+authors = ["Tate, Hongliang Tian <tate.thl@antgroup.com>", "Song Shaowei <songshaowei.ssw@antgroup.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+default = ["libc"]
+sgx = ["sgx_types", "sgx_tstd", "sgx_trts", "sgx_libc", "async-io/sgx", "async-rt/sgx"]
+
+[dependencies]
+async-trait = "0.1.52"
+spin = "0.7"
+lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
+log = "0.4"
+cfg-if = "1.0"
+libc = { version = "0.2", optional = true }
+
+async-rt = { path = "../async-rt" }
+async-io = { path = "../async-io" }
+errno = { path = "../errno" }
+block-device = { path = "../block-device" }
+object-id = { path = "../object-id" }
+
+sgx_types = { path = "../../../../deps/rust-sgx-sdk/sgx_types", optional = true }
+sgx_tstd = { path = "../../../../deps/rust-sgx-sdk/sgx_tstd", optional = true, features = ["backtrace"] }
+sgx_trts = { path = "../../../../deps/rust-sgx-sdk/sgx_trts", optional = true }
+sgx_libc = { path = "../../../../deps/rust-sgx-sdk/sgx_libc", optional = true }
+
+[dev-dependencies]
+async-rt = { path = "../async-rt", features = ["auto_run"] }
+lazy_static = "1.4"
+
+[lib]
+doctest = false
