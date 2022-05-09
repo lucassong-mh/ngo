@@ -8,7 +8,7 @@ edition = "2018"
 
 [features]
 default = ["libc"]
-sgx = ["sgx_types", "sgx_tstd", "sgx_trts", "sgx_libc", "async-vfs/sgx", "async-io/sgx", "async-rt/sgx"]
+sgx = ["sgx_types", "sgx_tstd", "sgx_trts", "sgx_libc", "async-vfs/sgx", "async-io/sgx", "async-rt/sgx", "page-cache/sgx"]
 
 [dependencies]
 async-vfs = { path = "../async-vfs" }
@@ -16,6 +16,7 @@ async-io = { path = "../async-io" }
 async-rt = { path = "../async-rt" }
 errno = { path = "../errno" }
 block-device = { path = "../block-device" }
+page-cache = { path = "../page-cache" }
 async-trait = "0.1.52"
 static_assertions = "0.3"
 log = "0.4"

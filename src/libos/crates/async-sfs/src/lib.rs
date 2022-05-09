@@ -14,6 +14,7 @@ extern crate log;
 // Export SimpleFileSystem
 pub use fs::AsyncSimpleFS;
 
+mod cache;
 mod fs;
 mod prelude;
 mod structs;
