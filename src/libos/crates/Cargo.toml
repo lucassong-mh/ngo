@@ -15,7 +15,8 @@ members = [
     "object-id",
     "sgx-disk",
     "sgx-untrusted-alloc",
-    "vdso-time"
+    "vdso-time",
+    "page-cache",
 ]
 
 # Default members can run on Linux; non-default members can only run inside SGX.
