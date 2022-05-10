@@ -33,8 +33,7 @@ impl SFSInode {
 impl AsyncInode for SFSInode {
     async fn read_at(&self, offset: usize, buf: &mut [u8]) -> Result<usize> {
         let len = match self.metadata()?.type_ {
-            FileType::File => self.inner()._read_at(offset, buf).await?,
-            FileType::SymLink => self.inner()._read_at(offset, buf).await?,
+            FileType::File | FileType::SymLink => self.inner()._read_at(offset, buf).await?,
             _ => return_errno!(EISDIR, "not file"),
         };
         Ok(len)
@@ -606,23 +605,21 @@ impl InodeInner {
                     self.set_device_block_id(file_block_id, device_block_id)
                         .await?;
                 }
-                // clean up
-                let mut disk_inode = self.disk_inode.write();
-                let old_size = disk_inode.size as usize;
-                disk_inode.size = len as u32;
-                drop(disk_inode);
-                //self._clean_at(old_size, len).await?;
+                self.disk_inode.write().size = len as u32;
             }
             Ordering::Less => {
                 // free extra blocks
                 for file_block_id in blocks..old_blocks {
                     let device_block_id = self.get_device_block_id(file_block_id).await?;
-                    self.fs().inner().free_block(device_block_id);
+                    self.fs().inner().free_block(device_block_id).await?;
                 }
                 let mut disk_inode = self.disk_inode.write();
                 // free indirect block if needed
                 if blocks < MAX_NBLOCK_DIRECT && old_blocks >= MAX_NBLOCK_DIRECT {
-                    self.fs().inner().free_block(disk_inode.indirect as BlockId);
+                    self.fs()
+                        .inner()
+                        .free_block(disk_inode.indirect as BlockId)
+                        .await?;
                     disk_inode.indirect = 0;
                 }
                 // free double indirect block if needed
@@ -643,13 +640,14 @@ impl InodeInner {
                             .load_struct::<u32>(disk_inode.db_indirect as BlockId, ENTRY_SIZE * i)
                             .await?;
                         assert!(indirect > 0);
-                        self.fs().inner().free_block(indirect as BlockId);
+                        self.fs().inner().free_block(indirect as BlockId).await?;
                     }
                     if blocks < MAX_NBLOCK_INDIRECT {
                         assert!(disk_inode.db_indirect > 0);
                         self.fs()
                             .inner()
-                            .free_block(disk_inode.db_indirect as BlockId);
+                            .free_block(disk_inode.db_indirect as BlockId)
+                            .await?;
                         disk_inode.db_indirect = 0;
                     }
                 }
@@ -718,14 +716,6 @@ impl InodeInner {
         Ok(write_len)
     }
 
-    /// Clean content, no matter what type it is
-    /*fn _clean_at(&self, begin: usize, end: usize) -> Result<usize> {
-        static ZEROS: [u8; BLKSIZE] = [0; BLKSIZE];
-        self._io_at(begin, end, |device, range, _| {
-            device.write_block(range.block, range.begin, &ZEROS[..range.len()])
-        })
-    }*/
-
     fn nlinks_inc(&self) {
         self.disk_inode.write().nlinks += 1;
     }
@@ -740,7 +730,7 @@ impl InodeInner {
         if self.disk_inode.read().nlinks == 0 {
             self._resize(0).await?;
             self.disk_inode.write().sync();
-            self.fs().inner().free_block(self.id);
+            self.fs().inner().free_block(self.id).await?;
             return Ok(());
         }
         if self.disk_inode.read().dirty() {
@@ -935,12 +925,17 @@ impl FsInner {
     }
 
     /// Free a block
-    fn free_block(&self, block_id: BlockId) {
+    async fn free_block(&self, block_id: BlockId) -> Result<()> {
         let mut free_map = self.free_map.write();
+        let mut super_block = self.super_block.write();
         assert!(!free_map[block_id]);
         free_map.set(block_id, true);
-        self.super_block.write().unused_blocks += 1;
+        super_block.unused_blocks += 1;
         trace!("free block {:#x}", block_id);
+        // clean the block after free
+        static ZEROS: [u8; BLOCK_SIZE] = [0; BLOCK_SIZE];
+        self.storage.write_at(block_id, &ZEROS, 0).await?;
+        Ok(())
     }
 
     /// Create a new inode struct, then insert it to inode caches
