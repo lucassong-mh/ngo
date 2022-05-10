@@ -33,18 +33,18 @@ impl SFSInode {
 impl AsyncInode for SFSInode {
     async fn read_at(&self, offset: usize, buf: &mut [u8]) -> Result<usize> {
         let len = match self.metadata()?.type_ {
-            FileType::File | FileType::SymLink => self.inner()._read_at(offset, buf).await?,
+            VfsFileType::File | VfsFileType::SymLink => self.inner()._read_at(offset, buf).await?,
             _ => return_errno!(EISDIR, "not file"),
         };
         Ok(len)
     }
 
     async fn write_at(&self, offset: usize, buf: &[u8]) -> Result<usize> {
-        let DiskInode { type_, size, .. } = **self.inner().disk_inode.read();
-        let len = match type_ {
-            FileType::File | FileType::SymLink => {
+        let info = self.metadata()?;
+        let len = match info.type_ {
+            VfsFileType::File | VfsFileType::SymLink => {
                 let end_offset = offset + buf.len();
-                if (size as usize) < end_offset {
+                if info.size < end_offset {
                     self.inner()._resize(end_offset).await?;
                 }
                 self.inner()._write_at(offset, buf).await?
@@ -68,7 +68,7 @@ impl AsyncInode for SFSInode {
                 _ => panic!("Unknown file type"),
             },
             mode: 0o777,
-            type_: disk_inode.type_.clone(),
+            type_: VfsFileType::from(disk_inode.type_.clone()),
             blocks: disk_inode.blocks as usize * (BLOCK_SIZE / 512), // Number of 512B blocks
             atime: Timespec { sec: 0, nsec: 0 },
             mtime: Timespec { sec: 0, nsec: 0 },
@@ -96,17 +96,21 @@ impl AsyncInode for SFSInode {
     }
 
     async fn resize(&self, len: usize) -> Result<()> {
-        let type_ = self.metadata()?.type_;
-        if type_ != FileType::File && type_ != FileType::SymLink {
-            return_errno!(EISDIR, "not file");
+        match self.metadata()?.type_ {
+            VfsFileType::File | VfsFileType::SymLink => self.inner()._resize(len).await?,
+            _ => return_errno!(EISDIR, "not file"),
         }
-        self.inner()._resize(len).await?;
         Ok(())
     }
 
-    async fn create(&self, name: &str, type_: FileType, _mode: u16) -> Result<Arc<dyn AsyncInode>> {
+    async fn create(
+        &self,
+        name: &str,
+        type_: VfsFileType,
+        _mode: u16,
+    ) -> Result<Arc<dyn AsyncInode>> {
         let info = self.metadata()?;
-        if info.type_ != FileType::Dir {
+        if info.type_ != VfsFileType::Dir {
             return_errno!(ENOTDIR, "not dir");
         }
         if info.nlinks == 0 {
@@ -120,9 +124,9 @@ impl AsyncInode for SFSInode {
 
         // Create new INode
         let inode = match type_ {
-            FileType::File => self.inner().fs().inner().new_inode_file()?,
-            FileType::SymLink => self.inner().fs().inner().new_inode_symlink()?,
-            FileType::Dir => {
+            VfsFileType::File => self.inner().fs().inner().new_inode_file()?,
+            VfsFileType::SymLink => self.inner().fs().inner().new_inode_symlink()?,
+            VfsFileType::Dir => {
                 self.inner()
                     .fs()
                     .inner()
@@ -140,7 +144,7 @@ impl AsyncInode for SFSInode {
             })
             .await?;
         inode.inner().nlinks_inc();
-        if type_ == FileType::Dir {
+        if type_ == VfsFileType::Dir {
             inode.inner().nlinks_inc(); //for .
             self.inner().nlinks_inc(); //for ..
         }
@@ -150,7 +154,7 @@ impl AsyncInode for SFSInode {
 
     async fn link(&self, name: &str, other: &Arc<dyn AsyncInode>) -> Result<()> {
         let info = self.metadata()?;
-        if info.type_ != FileType::Dir {
+        if info.type_ != VfsFileType::Dir {
             return_errno!(ENOTDIR, "not dir");
         }
         if info.nlinks == 0 {
@@ -165,7 +169,7 @@ impl AsyncInode for SFSInode {
         if !Arc::ptr_eq(&self.fs(), &child.fs()) {
             return_errno!(EXDEV, "not same fs");
         }
-        if child.metadata()?.type_ == FileType::Dir {
+        if child.metadata()?.type_ == VfsFileType::Dir {
             return_errno!(EISDIR, "entry is dir");
         }
         self.inner()
@@ -180,7 +184,7 @@ impl AsyncInode for SFSInode {
 
     async fn unlink(&self, name: &str) -> Result<()> {
         let info = self.metadata()?;
-        if info.type_ != FileType::Dir {
+        if info.type_ != VfsFileType::Dir {
             return_errno!(ENOTDIR, "not dir");
         }
         if info.nlinks == 0 {
@@ -198,14 +202,14 @@ impl AsyncInode for SFSInode {
         let inode = self.inner().fs().inner().get_inode(inode_id).await;
 
         let type_ = inode.metadata()?.type_;
-        if type_ == FileType::Dir {
+        if type_ == VfsFileType::Dir {
             // only . and ..
             if inode.metadata()?.size / DIRENT_SIZE > 2 {
                 return_errno!(ENOTEMPTY, "dir not empty");
             }
         }
         inode.inner().nlinks_dec();
-        if type_ == FileType::Dir {
+        if type_ == VfsFileType::Dir {
             inode.inner().nlinks_dec(); //for .
             self.inner().nlinks_dec(); //for ..
         }
@@ -221,7 +225,7 @@ impl AsyncInode for SFSInode {
         new_name: &str,
     ) -> Result<()> {
         let info = self.metadata()?;
-        if info.type_ != FileType::Dir {
+        if info.type_ != VfsFileType::Dir {
             return_errno!(ENOTDIR, "self not dir");
         }
         if info.nlinks == 0 {
@@ -238,7 +242,7 @@ impl AsyncInode for SFSInode {
         if !Arc::ptr_eq(&self.fs(), &dest.fs()) {
             return_errno!(EXDEV, "not same fs");
         }
-        if dest_info.type_ != FileType::Dir {
+        if dest_info.type_ != VfsFileType::Dir {
             return_errno!(ENOTDIR, "dest not dir");
         }
         if dest_info.nlinks == 0 {
@@ -275,7 +279,7 @@ impl AsyncInode for SFSInode {
             self.inner().remove_direntry(entry_id).await?;
 
             let inode = self.inner().fs().inner().get_inode(inode_id).await;
-            if inode.metadata()?.type_ == FileType::Dir {
+            if inode.metadata()?.type_ == VfsFileType::Dir {
                 self.inner().nlinks_dec();
                 dest.inner().nlinks_inc();
             }
@@ -285,7 +289,7 @@ impl AsyncInode for SFSInode {
 
     async fn find(&self, name: &str) -> Result<Arc<dyn AsyncInode>> {
         let info = self.metadata()?;
-        if info.type_ != FileType::Dir {
+        if info.type_ != VfsFileType::Dir {
             return_errno!(ENOTDIR, "not dir");
         }
         let inode_id = self
@@ -297,7 +301,7 @@ impl AsyncInode for SFSInode {
     }
 
     async fn read_link(&self) -> Result<String> {
-        if self.metadata()?.type_ != FileType::SymLink {
+        if self.metadata()?.type_ != VfsFileType::SymLink {
             return_errno!(EINVAL, "not symlink");
         }
         let mut content = vec![0u8; PATH_MAX];
@@ -308,7 +312,7 @@ impl AsyncInode for SFSInode {
     }
 
     async fn write_link(&self, target: &str) -> Result<()> {
-        if self.metadata()?.type_ != FileType::SymLink {
+        if self.metadata()?.type_ != VfsFileType::SymLink {
             return_errno!(EINVAL, "not symlink");
         }
         let data = target.as_bytes();
@@ -319,7 +323,7 @@ impl AsyncInode for SFSInode {
 
     async fn get_entry(&self, id: usize) -> Result<String> {
         let info = self.metadata()?;
-        if info.type_ != FileType::Dir {
+        if info.type_ != VfsFileType::Dir {
             return_errno!(ENOTDIR, "not dir");
         }
         if id >= info.size as usize / DIRENT_SIZE {

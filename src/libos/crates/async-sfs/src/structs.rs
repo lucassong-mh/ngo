@@ -59,6 +59,31 @@ pub struct DiskEntry {
     pub name: Str256,
 }
 
+/// file type
+#[repr(u16)]
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+pub enum FileType {
+    Invalid = 0,
+    File = 1,
+    Dir = 2,
+    SymLink = 3,
+    CharDevice = 4,
+    BlockDevice = 5,
+}
+
+impl From<FileType> for VfsFileType {
+    fn from(t: FileType) -> Self {
+        match t {
+            FileType::File => VfsFileType::File,
+            FileType::SymLink => VfsFileType::SymLink,
+            FileType::Dir => VfsFileType::Dir,
+            FileType::CharDevice => VfsFileType::CharDevice,
+            FileType::BlockDevice => VfsFileType::BlockDevice,
+            _ => panic!("unknown file type"),
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone)]
 pub struct Str256(pub [u8; 256]);

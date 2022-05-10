@@ -42,13 +42,13 @@ fn create_file() -> Result<()> {
     async_rt::task::block_on(async move {
         let sfs = _create_new_sfs().await;
         let root = sfs.root_inode().await;
-        let file1 = root.create("file1", FileType::File, 0o777).await?;
+        let file1 = root.create("file1", VfsFileType::File, 0o777).await?;
         assert_eq!(
             file1.metadata()?,
             Metadata {
                 inode: 35,
                 size: 0,
-                type_: FileType::File,
+                type_: VfsFileType::File,
                 mode: 0o777,
                 blocks: 0,
                 atime: Timespec { sec: 0, nsec: 0 },
@@ -72,7 +72,7 @@ fn resize() -> Result<()> {
     async_rt::task::block_on(async move {
         let sfs = _create_new_sfs().await;
         let root = sfs.root_inode().await;
-        let file1 = root.create("file1", FileType::File, 0o777).await?;
+        let file1 = root.create("file1", VfsFileType::File, 0o777).await?;
         assert_eq!(file1.metadata()?.size, 0, "empty file size != 0");
 
         const SIZE1: usize = 0x1234;
@@ -108,7 +108,7 @@ fn resize_too_large_should_panic() -> Result<()> {
     async_rt::task::block_on(async move {
         let sfs = _create_new_sfs().await;
         let root = sfs.root_inode().await;
-        let file1 = root.create("file1", FileType::File, 0o777).await?;
+        let file1 = root.create("file1", VfsFileType::File, 0o777).await?;
         assert!(file1.resize(1 << 40).await.is_err());
         sfs.sync().await?;
         Ok(())
@@ -131,7 +131,7 @@ fn create_then_lookup() -> Result<()> {
         );
 
         let file1 = root
-            .create("file1", FileType::File, 0o777)
+            .create("file1", VfsFileType::File, 0o777)
             .await
             .expect("failed to create file1");
         assert!(
@@ -144,11 +144,11 @@ fn create_then_lookup() -> Result<()> {
         );
 
         let dir1 = root
-            .create("dir1", FileType::Dir, 0o777)
+            .create("dir1", VfsFileType::Dir, 0o777)
             .await
             .expect("failed to create dir1");
         let file2 = dir1
-            .create("file2", FileType::File, 0o777)
+            .create("file2", VfsFileType::File, 0o777)
             .await
             .expect("failed to create /dir1/file2");
         assert!(
@@ -222,7 +222,7 @@ fn test_symlinks() -> Result<()> {
         let root = sfs.root_inode().await;
 
         let file1 = root
-            .create("file1", FileType::File, 0o777)
+            .create("file1", VfsFileType::File, 0o777)
             .await
             .expect("failed to create file1");
         assert!(
@@ -231,14 +231,14 @@ fn test_symlinks() -> Result<()> {
         );
 
         let link1 = root
-            .create("link1", FileType::SymLink, 0o777)
+            .create("link1", VfsFileType::SymLink, 0o777)
             .await
             .expect("failed to create link1");
         let data = "file1";
         link1.write_link(data).await?;
 
         let link2 = root
-            .create("link2", FileType::SymLink, 0o777)
+            .create("link2", VfsFileType::SymLink, 0o777)
             .await
             .expect("failed to create link2");
         let data = "link1";
@@ -261,7 +261,7 @@ fn test_symlinks() -> Result<()> {
         );
 
         let link3 = root
-            .create("link3", FileType::SymLink, 0o777)
+            .create("link3", VfsFileType::SymLink, 0o777)
             .await
             .expect("failed to create link3");
         let data = "/link2";
@@ -276,15 +276,15 @@ fn test_symlinks() -> Result<()> {
         );
 
         let dir1 = root
-            .create("dir1", FileType::Dir, 0o777)
+            .create("dir1", VfsFileType::Dir, 0o777)
             .await
             .expect("failed to create dir1");
         let file2 = dir1
-            .create("file2", FileType::File, 0o777)
+            .create("file2", VfsFileType::File, 0o777)
             .await
             .expect("failed to create /dir1/file2");
         let link_dir = root
-            .create("link_dir", FileType::SymLink, 0o777)
+            .create("link_dir", VfsFileType::SymLink, 0o777)
             .await
             .expect("failed to create link2");
         let data = "dir1";
@@ -306,7 +306,7 @@ fn test_double_indirect_blocks() -> Result<()> {
         let root = sfs.root_inode().await;
 
         let file1 = root
-            .create("file1", FileType::File, 0o777)
+            .create("file1", VfsFileType::File, 0o777)
             .await
             .expect("failed to create file1");
         assert!(
@@ -373,7 +373,7 @@ fn hard_link() -> Result<()> {
     async_rt::task::block_on(async move {
         let sfs = _create_new_sfs().await;
         let root = sfs.root_inode().await;
-        let file1 = root.create("file1", FileType::File, 0o777).await?;
+        let file1 = root.create("file1", VfsFileType::File, 0o777).await?;
         root.link("file2", &file1).await?;
         let file2 = root.lookup("file2").await?;
         file1.resize(100).await?;
@@ -391,13 +391,13 @@ fn nlinks() -> Result<()> {
         // -root
         assert_eq!(root.metadata()?.nlinks, 2);
 
-        let file1 = root.create("file1", FileType::File, 0o777).await?;
+        let file1 = root.create("file1", VfsFileType::File, 0o777).await?;
         // -root
         //   `-file1 <f1>
         assert_eq!(file1.metadata()?.nlinks, 1);
         assert_eq!(root.metadata()?.nlinks, 2);
 
-        let dir1 = root.create("dir1", FileType::Dir, 0o777).await?;
+        let dir1 = root.create("dir1", VfsFileType::Dir, 0o777).await?;
         // -root
         //   +-dir1
         //   `-file1 <f1>
@@ -420,7 +420,7 @@ fn nlinks() -> Result<()> {
         assert_eq!(root.metadata()?.nlinks, 3);
         assert_eq!(file1.metadata()?.nlinks, 2);
 
-        let dir2 = root.create("dir2", FileType::Dir, 0o777).await?;
+        let dir2 = root.create("dir2", VfsFileType::Dir, 0o777).await?;
         // -root
         //   +-dir_1
         //   |  `-file1_ <f1>
