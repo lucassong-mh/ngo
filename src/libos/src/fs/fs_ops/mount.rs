@@ -46,7 +46,7 @@ pub async fn do_mount_rootfs(
     Ok(())
 }
 
-pub fn do_mount(
+pub async fn do_mount(
     source: &str,
     target: &str,
     flags: MountFlags,
@@ -63,7 +63,7 @@ pub fn do_mount(
         let fs_path = FsPath::try_from(target)?;
         let thread = current!();
         let fs = thread.fs().read().unwrap();
-        PathBuf::from(fs.convert_fspath_to_abs(&fs_path)?)
+        PathBuf::from(fs.convert_fspath_to_abs(&fs_path).await?)
     };
 
     if flags.contains(MountFlags::MS_REMOUNT)
@@ -150,7 +150,7 @@ pub fn do_mount(
     Ok(())
 }
 
-pub fn do_umount(target: &str, flags: UmountFlags) -> Result<()> {
+pub async fn do_umount(target: &str, flags: UmountFlags) -> Result<()> {
     debug!("umount: target: {}, flags: {:?}", target, flags);
 
     let target = if target == "/" {
@@ -159,7 +159,7 @@ pub fn do_umount(target: &str, flags: UmountFlags) -> Result<()> {
         let fs_path = FsPath::try_from(target)?;
         let thread = current!();
         let fs = thread.fs().read().unwrap();
-        fs.convert_fspath_to_abs(&fs_path)?
+        fs.convert_fspath_to_abs(&fs_path).await?
     };
 
     let mut rootfs = ROOT_FS.write().unwrap();

@@ -9,7 +9,7 @@ pub async fn do_chdir(path: &str) -> Result<()> {
         let fs = current.fs().read().unwrap();
         fs.lookup_inode(&FsPath::try_from(path)?).await?
     };
-    if inode.metadata()?.type_ != FileType::Dir {
+    if inode.metadata().await?.type_ != FileType::Dir {
         return_errno!(ENOTDIR, "cwd must be directory");
     }
 
@@ -17,7 +17,7 @@ pub async fn do_chdir(path: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn do_fchdir(fd: FileDesc) -> Result<()> {
+pub async fn do_fchdir(fd: FileDesc) -> Result<()> {
     debug!("fchdir: fd: {}", fd);
 
     let current = current!();
@@ -28,7 +28,7 @@ pub fn do_fchdir(fd: FileDesc) -> Result<()> {
         }
         inode_file.open_path()
     } else if let Some(async_file_handle) = file_ref.as_async_file_handle() {
-        if async_file_handle.dentry().inode().metadata()?.type_ != FileType::Dir {
+        if async_file_handle.dentry().inode().metadata().await?.type_ != FileType::Dir {
             return_errno!(ENOTDIR, "cwd must be directory");
         }
         async_file_handle.dentry().open_path()

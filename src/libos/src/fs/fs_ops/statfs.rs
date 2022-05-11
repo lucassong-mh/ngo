@@ -3,7 +3,7 @@ use rcore_fs::vfs::FsInfo;
 use std::convert::TryFrom;
 use std::ffi::CString;
 
-pub fn do_fstatfs(fd: FileDesc) -> Result<Statfs> {
+pub async fn do_fstatfs(fd: FileDesc) -> Result<Statfs> {
     debug!("fstatfs: fd: {}", fd);
 
     let file_ref = current!().file(fd)?;
@@ -11,7 +11,7 @@ pub fn do_fstatfs(fd: FileDesc) -> Result<Statfs> {
         let fs_info = if let Some(inode_file) = file_ref.as_inode_file() {
             inode_file.inode().fs().info()
         } else if let Some(async_file_handle) = file_ref.as_async_file_handle() {
-            async_file_handle.dentry().inode().fs().info()
+            async_file_handle.dentry().inode().fs().info().await
         } else {
             return_errno!(EBADF, "not an inode");
         };
@@ -33,7 +33,7 @@ pub async fn do_statfs(path: &FsPath) -> Result<Statfs> {
         let fs_info = if let Some(i) = inode.as_sync() {
             i.fs().info()
         } else {
-            inode.as_async().unwrap().fs().info()
+            inode.as_async().unwrap().fs().info().await
         };
         Statfs::try_from(fs_info)?
     };

@@ -29,17 +29,17 @@ impl InodeHandle {
         }
     }
 
-    pub fn metadata(&self) -> Result<Metadata> {
+    pub async fn metadata(&self) -> Result<Metadata> {
         match self {
             Self::Sync(i) => Ok(i.metadata()?),
-            Self::Async(i) => Ok(i.metadata()?),
+            Self::Async(i) => Ok(i.metadata().await?),
         }
     }
 
-    pub fn set_metadata(&self, metadata: &Metadata) -> Result<()> {
+    pub async fn set_metadata(&self, metadata: &Metadata) -> Result<()> {
         match self {
             Self::Sync(i) => Ok(i.set_metadata(metadata)?),
-            Self::Async(i) => Ok(i.set_metadata(metadata)?),
+            Self::Async(i) => Ok(i.set_metadata(metadata).await?),
         }
     }
 

@@ -22,14 +22,14 @@ pub async fn do_fchownat(fs_path: &FsPath, uid: u32, gid: u32, flags: ChownFlags
             fs.lookup_inode(fs_path).await?
         }
     };
-    let mut info = inode.metadata()?;
+    let mut info = inode.metadata().await?;
     info.uid = uid as usize;
     info.gid = gid as usize;
-    inode.set_metadata(&info)?;
+    inode.set_metadata(&info).await?;
     Ok(())
 }
 
-pub fn do_fchown(fd: FileDesc, uid: u32, gid: u32) -> Result<()> {
+pub async fn do_fchown(fd: FileDesc, uid: u32, gid: u32) -> Result<()> {
     debug!("fchown: fd: {}, uid: {}, gid: {}", fd, uid, gid);
 
     let file_ref = current!().file(fd)?;
@@ -41,10 +41,10 @@ pub fn do_fchown(fd: FileDesc, uid: u32, gid: u32) -> Result<()> {
         inode.set_metadata(&info)?;
     } else if let Some(async_file_handle) = file_ref.as_async_file_handle() {
         let inode = async_file_handle.dentry().inode();
-        let mut info = inode.metadata()?;
+        let mut info = inode.metadata().await?;
         info.uid = uid as usize;
         info.gid = gid as usize;
-        inode.set_metadata(&info)?;
+        inode.set_metadata(&info).await?;
     } else {
         return_errno!(EBADF, "not an inode");
     }

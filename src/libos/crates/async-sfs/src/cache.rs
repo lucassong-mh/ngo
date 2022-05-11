@@ -6,7 +6,7 @@ use block_device::{BlockDevice, BlockDeviceExt};
 use errno::prelude::Result;
 use page_cache::{global_alloc_ext::MyAlloc, PageCache, PageCacheFlusher, PageHandle, PageState};
 
-use spin::Mutex;
+use spin::{Mutex, RwLock};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,

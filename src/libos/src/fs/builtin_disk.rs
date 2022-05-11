@@ -9,8 +9,8 @@ use sgx_disk::{CryptDisk, HostDisk, IoUringDisk, PfsDisk, SyncIoDisk};
 
 use super::*;
 
-pub fn try_open_disk(fs: &FsView, fs_path: &FsPath) -> Result<Option<Arc<DiskFile>>> {
-    let abs_path = fs.convert_fspath_to_abs(&fs_path)?;
+pub async fn try_open_disk(fs: &FsView, fs_path: &FsPath) -> Result<Option<Arc<DiskFile>>> {
+    let abs_path = fs.convert_fspath_to_abs(&fs_path).await?;
     if !abs_path.starts_with("/dev") {
         return Ok(None);
     }

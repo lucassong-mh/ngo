@@ -24,7 +24,7 @@ async fn do_unlink(fs_path: &FsPath) -> Result<()> {
         fs.lookup_dirinode_and_basename(fs_path).await?
     };
     let file_inode = dir_inode.find(&file_name).await?;
-    let metadata = file_inode.metadata()?;
+    let metadata = file_inode.metadata().await?;
     if metadata.type_ == FileType::Dir {
         return_errno!(EISDIR, "unlink on directory");
     }

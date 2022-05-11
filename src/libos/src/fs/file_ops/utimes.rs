@@ -83,7 +83,7 @@ fn timespec_valid(time: timespec_t) -> bool {
     }
 }
 
-pub fn do_utimes_fd(fd: FileDesc, atime: Utime, mtime: Utime, flags: i32) -> Result<()> {
+pub async fn do_utimes_fd(fd: FileDesc, atime: Utime, mtime: Utime, flags: i32) -> Result<()> {
     debug!(
         "utimes_fd: fd: {:?}, atime: {:?}, mtime: {:?}, flags: {:?}",
         fd, atime, mtime, flags
@@ -107,14 +107,14 @@ pub fn do_utimes_fd(fd: FileDesc, atime: Utime, mtime: Utime, flags: i32) -> Res
         inode.set_metadata(&info)?;
     } else if let Some(async_file_handle) = file_ref.as_async_file_handle() {
         let inode = async_file_handle.dentry().inode();
-        let mut info = inode.metadata()?;
+        let mut info = inode.metadata().await?;
         if let Utime::UTIME(atime) = atime {
             info.atime = atime;
         }
         if let Utime::UTIME(mtime) = mtime {
             info.mtime = mtime;
         }
-        inode.set_metadata(&info)?;
+        inode.set_metadata(&info).await?;
     } else {
         return_errno!(EBADF, "not an inode");
     }
@@ -141,13 +141,13 @@ pub async fn do_utimes_path(
             fs.lookup_inode(fs_path).await?
         }
     };
-    let mut info = inode.metadata()?;
+    let mut info = inode.metadata().await?;
     if let Utime::UTIME(atime) = atime {
         info.atime = atime;
     }
     if let Utime::UTIME(mtime) = mtime {
         info.mtime = mtime;
     }
-    inode.set_metadata(&info)?;
+    inode.set_metadata(&info).await?;
     Ok(())
 }

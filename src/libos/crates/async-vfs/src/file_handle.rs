@@ -9,7 +9,7 @@ use async_io::ioctl::IoctlCmd;
 /// The opened async inode through sys_open()
 pub struct AsyncFileHandle {
     dentry: Dentry,
-    offset: Mutex<usize>,
+    offset: AsyncMutex<usize>,
     access_mode: AccessMode,
     status_flags: RwLock<StatusFlags>,
 }
@@ -17,12 +17,12 @@ pub struct AsyncFileHandle {
 impl AsyncFileHandle {
     pub async fn open(dentry: Dentry, flags: u32) -> Result<Self> {
         let access_mode = AccessMode::from_u32(flags)?;
-        if access_mode.writable() && dentry.inode().metadata()?.type_ == FileType::Dir {
+        if access_mode.writable() && dentry.inode().metadata().await?.type_ == FileType::Dir {
             return_errno!(EISDIR, "Directory cannot be open to write");
         }
         let creation_flags = CreationFlags::from_bits_truncate(flags);
         if creation_flags.should_truncate()
-            && dentry.inode().metadata()?.type_ == FileType::File
+            && dentry.inode().metadata().await?.type_ == FileType::File
             && access_mode.writable()
         {
             // truncate the length to 0
@@ -31,7 +31,7 @@ impl AsyncFileHandle {
         let status_flags = StatusFlags::from_bits_truncate(flags);
         Ok(Self {
             dentry,
-            offset: Mutex::new(0),
+            offset: AsyncMutex::new(0),
             access_mode,
             status_flags: RwLock::new(status_flags),
         })
@@ -41,7 +41,7 @@ impl AsyncFileHandle {
         if !self.access_mode.readable() {
             return_errno!(EBADF, "File not readable");
         }
-        let mut offset = self.offset.lock();
+        let mut offset = self.offset.lock().await;
         let len = self.dentry.inode().read_at(*offset, buf).await?;
         *offset += len;
         Ok(len)
@@ -51,7 +51,7 @@ impl AsyncFileHandle {
         if !self.access_mode.readable() {
             return_errno!(EBADF, "File not readable");
         }
-        let mut offset = self.offset.lock();
+        let mut offset = self.offset.lock().await;
         let mut total_len = 0;
         for buf in bufs {
             match self.dentry.inode().read_at(*offset, buf).await {
@@ -70,9 +70,9 @@ impl AsyncFileHandle {
         if !self.access_mode.writable() {
             return_errno!(EBADF, "File not writable");
         }
-        let mut offset = self.offset.lock();
+        let mut offset = self.offset.lock().await;
         if self.status_flags.read().always_append() {
-            let info = self.dentry.inode().metadata()?;
+            let info = self.dentry.inode().metadata().await?;
             *offset = info.size;
         }
         let len = self.dentry.inode().write_at(*offset, buf).await?;
@@ -84,9 +84,9 @@ impl AsyncFileHandle {
         if !self.access_mode.writable() {
             return_errno!(EBADF, "File not writable");
         }
-        let mut offset = self.offset.lock();
+        let mut offset = self.offset.lock().await;
         if self.status_flags.read().always_append() {
-            let info = self.dentry.inode().metadata()?;
+            let info = self.dentry.inode().metadata().await?;
             *offset = info.size;
         }
         let mut total_len = 0;
@@ -103,8 +103,8 @@ impl AsyncFileHandle {
         Ok(total_len)
     }
 
-    pub fn seek(&self, pos: SeekFrom) -> Result<usize> {
-        let mut offset = self.offset.lock();
+    pub async fn seek(&self, pos: SeekFrom) -> Result<usize> {
+        let mut offset = self.offset.lock().await;
         let new_offset: i64 = match pos {
             SeekFrom::Start(off /* as u64 */) => {
                 if off > i64::max_value() as u64 {
@@ -113,7 +113,7 @@ impl AsyncFileHandle {
                 off as i64
             }
             SeekFrom::End(off /* as i64 */) => {
-                let file_size = self.dentry.inode().metadata()?.size as i64;
+                let file_size = self.dentry.inode().metadata().await?.size as i64;
                 assert!(file_size >= 0);
                 file_size
                     .checked_add(off)
@@ -184,8 +184,7 @@ impl std::fmt::Debug for AsyncFileHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "AsyncFileHandle {{ dentry: ???, offset: {}, access_mode: {:?}, status_flags: {:#o} }}",
-            *self.offset.lock(),
+            "AsyncFileHandle {{ dentry: ???, offset: ???, access_mode: {:?}, status_flags: {:#o} }}",
             self.access_mode,
             *self.status_flags.read()
         )

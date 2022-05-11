@@ -52,7 +52,8 @@ impl FsView {
             match self.lookup_inode_no_follow(fs_path).await {
                 Ok(inode) => {
                     let status_flags = StatusFlags::from_bits_truncate(flags);
-                    if inode.metadata()?.type_ == FileType::SymLink && !status_flags.is_fast_open()
+                    if inode.metadata().await?.type_ == FileType::SymLink
+                        && !status_flags.is_fast_open()
                     {
                         return_errno!(ELOOP, "file is a symlink");
                     }
@@ -60,7 +61,7 @@ impl FsView {
                         return_errno!(EEXIST, "file exists");
                     }
                     if creation_flags.must_be_directory()
-                        && inode.metadata()?.type_ != FileType::Dir
+                        && inode.metadata().await?.type_ != FileType::Dir
                     {
                         return_errno!(
                             ENOTDIR,
@@ -87,7 +88,7 @@ impl FsView {
                         return_errno!(EEXIST, "file exists");
                     }
                     if creation_flags.must_be_directory()
-                        && inode.metadata()?.type_ != FileType::Dir
+                        && inode.metadata().await?.type_ != FileType::Dir
                     {
                         return_errno!(
                             ENOTDIR,
@@ -99,7 +100,8 @@ impl FsView {
                 Err(e) if e.errno() == ENOENT && creation_flags.can_create() => {
                     // TODO: cannot call async fn recursively?
                     let (dir_inode, file_name) = if !self
-                        .convert_fspath_to_abs(fs_path)?
+                        .convert_fspath_to_abs(fs_path)
+                        .await?
                         .trim_start_matches('/')
                         .starts_with(ASYNC_SFS_NAME)
                     {
@@ -117,7 +119,7 @@ impl FsView {
                 Err(e) => return Err(e),
             }
         };
-        let open_path = self.convert_fspath_to_abs(fs_path)?;
+        let open_path = self.convert_fspath_to_abs(fs_path).await?;
         if let Some(sync_inode) = inode.as_sync() {
             let inode_file = INodeFile::open(sync_inode, flags, open_path)?;
             Ok(FileRef::new_inode(inode_file))
@@ -452,7 +454,7 @@ impl FsView {
     /// This function is used to record the open path for a file.
     ///
     /// TODO: Introducing dentry cache to get the full path from inode.
-    pub fn convert_fspath_to_abs(&self, fs_path: &FsPath) -> Result<String> {
+    pub async fn convert_fspath_to_abs(&self, fs_path: &FsPath) -> Result<String> {
         let abs_path = match fs_path.inner() {
             FsPathInner::Absolute(path) => (*path).to_owned(),
             FsPathInner::CwdRelative(path) => {
@@ -471,7 +473,7 @@ impl FsView {
                     }
                     inode_file.open_path().to_owned()
                 } else if let Some(async_file_handle) = file_ref.as_async_file_handle() {
-                    if async_file_handle.dentry().inode().metadata()?.type_ != FileType::Dir {
+                    if async_file_handle.dentry().inode().metadata().await?.type_ != FileType::Dir {
                         return_errno!(ENOTDIR, "dirfd is not a directory");
                     }
                     async_file_handle.dentry().open_path().to_owned()

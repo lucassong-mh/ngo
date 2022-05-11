@@ -30,8 +30,8 @@ fn create_new_sfs() -> Result<()> {
     async_rt::task::block_on(async move {
         let sfs = _create_new_sfs().await;
         let root = sfs.root_inode().await;
-        println!("fs info: {:?}", root.fs().info());
-        assert_eq!(root.fs().info().magic, SFS_MAGIC as usize);
+        println!("fs info: {:?}", root.fs().info().await);
+        assert_eq!(root.fs().info().await.magic, SFS_MAGIC as usize);
         sfs.sync().await?;
         Ok(())
     })
@@ -44,7 +44,7 @@ fn create_file() -> Result<()> {
         let root = sfs.root_inode().await;
         let file1 = root.create("file1", VfsFileType::File, 0o777).await?;
         assert_eq!(
-            file1.metadata()?,
+            file1.metadata().await?,
             Metadata {
                 inode: 35,
                 size: 0,
@@ -73,12 +73,16 @@ fn resize() -> Result<()> {
         let sfs = _create_new_sfs().await;
         let root = sfs.root_inode().await;
         let file1 = root.create("file1", VfsFileType::File, 0o777).await?;
-        assert_eq!(file1.metadata()?.size, 0, "empty file size != 0");
+        assert_eq!(file1.metadata().await?.size, 0, "empty file size != 0");
 
         const SIZE1: usize = 0x1234;
         const SIZE2: usize = 0x1250;
         file1.resize(SIZE1).await?;
-        assert_eq!(file1.metadata()?.size, SIZE1, "wrong size after resize");
+        assert_eq!(
+            file1.metadata().await?.size,
+            SIZE1,
+            "wrong size after resize"
+        );
         let mut data1: [u8; SIZE2] = unsafe { MaybeUninit::uninit().assume_init() };
         let len = file1.read_at(0, data1.as_mut()).await?;
         assert_eq!(len, SIZE1, "wrong size returned by read_at()");
@@ -377,7 +381,7 @@ fn hard_link() -> Result<()> {
         root.link("file2", &file1).await?;
         let file2 = root.lookup("file2").await?;
         file1.resize(100).await?;
-        assert_eq!(file2.metadata()?.size, 100);
+        assert_eq!(file2.metadata().await?.size, 100);
         sfs.sync().await?;
         Ok(())
     })
@@ -389,36 +393,36 @@ fn nlinks() -> Result<()> {
         let sfs = _create_new_sfs().await;
         let root = sfs.root_inode().await;
         // -root
-        assert_eq!(root.metadata()?.nlinks, 2);
+        assert_eq!(root.metadata().await?.nlinks, 2);
 
         let file1 = root.create("file1", VfsFileType::File, 0o777).await?;
         // -root
         //   `-file1 <f1>
-        assert_eq!(file1.metadata()?.nlinks, 1);
-        assert_eq!(root.metadata()?.nlinks, 2);
+        assert_eq!(file1.metadata().await?.nlinks, 1);
+        assert_eq!(root.metadata().await?.nlinks, 2);
 
         let dir1 = root.create("dir1", VfsFileType::Dir, 0o777).await?;
         // -root
         //   +-dir1
         //   `-file1 <f1>
-        assert_eq!(dir1.metadata()?.nlinks, 2);
-        assert_eq!(root.metadata()?.nlinks, 3);
+        assert_eq!(dir1.metadata().await?.nlinks, 2);
+        assert_eq!(root.metadata().await?.nlinks, 3);
 
         root.move_("dir1", &root, "dir_1").await?;
         // -root
         //   +-dir_1
         //   `-file1 <f1>
-        assert_eq!(dir1.metadata()?.nlinks, 2);
-        assert_eq!(root.metadata()?.nlinks, 3);
+        assert_eq!(dir1.metadata().await?.nlinks, 2);
+        assert_eq!(root.metadata().await?.nlinks, 3);
 
         dir1.link("file1_", &file1).await?;
         // -root
         //   +-dir_1
         //   |  `-file1_ <f1>
         //   `-file1 <f1>
-        assert_eq!(dir1.metadata()?.nlinks, 2);
-        assert_eq!(root.metadata()?.nlinks, 3);
-        assert_eq!(file1.metadata()?.nlinks, 2);
+        assert_eq!(dir1.metadata().await?.nlinks, 2);
+        assert_eq!(root.metadata().await?.nlinks, 3);
+        assert_eq!(file1.metadata().await?.nlinks, 2);
 
         let dir2 = root.create("dir2", VfsFileType::Dir, 0o777).await?;
         // -root
@@ -426,10 +430,10 @@ fn nlinks() -> Result<()> {
         //   |  `-file1_ <f1>
         //   +-dir2
         //   `-file1 <f1>
-        assert_eq!(dir1.metadata()?.nlinks, 2);
-        assert_eq!(dir2.metadata()?.nlinks, 2);
-        assert_eq!(root.metadata()?.nlinks, 4);
-        assert_eq!(file1.metadata()?.nlinks, 2);
+        assert_eq!(dir1.metadata().await?.nlinks, 2);
+        assert_eq!(dir2.metadata().await?.nlinks, 2);
+        assert_eq!(root.metadata().await?.nlinks, 4);
+        assert_eq!(file1.metadata().await?.nlinks, 2);
 
         root.move_("file1", &root, "file_1").await?;
         // -root
@@ -437,10 +441,10 @@ fn nlinks() -> Result<()> {
         //   |  `-file1_ <f1>
         //   +-dir2
         //   `-file_1 <f1>
-        assert_eq!(dir1.metadata()?.nlinks, 2);
-        assert_eq!(dir2.metadata()?.nlinks, 2);
-        assert_eq!(root.metadata()?.nlinks, 4);
-        assert_eq!(file1.metadata()?.nlinks, 2);
+        assert_eq!(dir1.metadata().await?.nlinks, 2);
+        assert_eq!(dir2.metadata().await?.nlinks, 2);
+        assert_eq!(root.metadata().await?.nlinks, 4);
+        assert_eq!(file1.metadata().await?.nlinks, 2);
 
         root.move_("file_1", &dir2, "file__1").await?;
         // -root
@@ -448,10 +452,10 @@ fn nlinks() -> Result<()> {
         //   |  `-file1_ <f1>
         //   `-dir2
         //      `-file__1 <f1>
-        assert_eq!(dir1.metadata()?.nlinks, 2);
-        assert_eq!(dir2.metadata()?.nlinks, 2);
-        assert_eq!(root.metadata()?.nlinks, 4);
-        assert_eq!(file1.metadata()?.nlinks, 2);
+        assert_eq!(dir1.metadata().await?.nlinks, 2);
+        assert_eq!(dir2.metadata().await?.nlinks, 2);
+        assert_eq!(root.metadata().await?.nlinks, 4);
+        assert_eq!(file1.metadata().await?.nlinks, 2);
 
         root.move_("dir_1", &dir2, "dir__1").await?;
         // -root
@@ -459,44 +463,44 @@ fn nlinks() -> Result<()> {
         //      +-dir__1
         //      |  `-file1_ <f1>
         //      `-file__1 <f1>
-        assert_eq!(dir1.metadata()?.nlinks, 2);
-        assert_eq!(dir2.metadata()?.nlinks, 3);
-        assert_eq!(root.metadata()?.nlinks, 3);
-        assert_eq!(file1.metadata()?.nlinks, 2);
+        assert_eq!(dir1.metadata().await?.nlinks, 2);
+        assert_eq!(dir2.metadata().await?.nlinks, 3);
+        assert_eq!(root.metadata().await?.nlinks, 3);
+        assert_eq!(file1.metadata().await?.nlinks, 2);
 
         dir2.unlink("file__1").await?;
         // -root
         //   `-dir2
         //      `-dir__1
         //         `-file1_ <f1>
-        assert_eq!(file1.metadata()?.nlinks, 1);
-        assert_eq!(dir1.metadata()?.nlinks, 2);
-        assert_eq!(dir2.metadata()?.nlinks, 3);
-        assert_eq!(root.metadata()?.nlinks, 3);
+        assert_eq!(file1.metadata().await?.nlinks, 1);
+        assert_eq!(dir1.metadata().await?.nlinks, 2);
+        assert_eq!(dir2.metadata().await?.nlinks, 3);
+        assert_eq!(root.metadata().await?.nlinks, 3);
 
         dir1.unlink("file1_").await?;
         // -root
         //   `-dir2
         //      `-dir__1
-        assert_eq!(file1.metadata()?.nlinks, 0);
-        assert_eq!(dir1.metadata()?.nlinks, 2);
-        assert_eq!(dir2.metadata()?.nlinks, 3);
-        assert_eq!(root.metadata()?.nlinks, 3);
+        assert_eq!(file1.metadata().await?.nlinks, 0);
+        assert_eq!(dir1.metadata().await?.nlinks, 2);
+        assert_eq!(dir2.metadata().await?.nlinks, 3);
+        assert_eq!(root.metadata().await?.nlinks, 3);
 
         dir2.unlink("dir__1").await?;
         // -root
         //   `-dir2
-        assert_eq!(file1.metadata()?.nlinks, 0);
-        assert_eq!(dir1.metadata()?.nlinks, 0);
-        assert_eq!(root.metadata()?.nlinks, 3);
-        assert_eq!(dir2.metadata()?.nlinks, 2);
+        assert_eq!(file1.metadata().await?.nlinks, 0);
+        assert_eq!(dir1.metadata().await?.nlinks, 0);
+        assert_eq!(root.metadata().await?.nlinks, 3);
+        assert_eq!(dir2.metadata().await?.nlinks, 2);
 
         root.unlink("dir2").await?;
         // -root
-        assert_eq!(file1.metadata()?.nlinks, 0);
-        assert_eq!(dir1.metadata()?.nlinks, 0);
-        assert_eq!(root.metadata()?.nlinks, 2);
-        assert_eq!(dir2.metadata()?.nlinks, 0);
+        assert_eq!(file1.metadata().await?.nlinks, 0);
+        assert_eq!(dir1.metadata().await?.nlinks, 0);
+        assert_eq!(root.metadata().await?.nlinks, 2);
+        assert_eq!(dir2.metadata().await?.nlinks, 0);
 
         sfs.sync().await?;
         Ok(())

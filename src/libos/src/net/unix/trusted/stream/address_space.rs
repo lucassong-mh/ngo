@@ -131,7 +131,9 @@ impl AddressSpace {
                         fs.lookup_inode_sync(&file_path)
                     };
                     if let Ok(inode) = inode {
-                        Some(AddressSpaceKey::from_inode(inode.metadata().unwrap().inode))
+                        Some(AddressSpaceKey::from_inode(
+                            inode.as_sync().unwrap().metadata().unwrap().inode,
+                        ))
                     } else {
                         None
                     }

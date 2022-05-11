@@ -154,7 +154,7 @@ pub async fn do_pwrite(fd: FileDesc, buf: *const u8, size: usize, offset: off_t)
 pub async fn do_fstat(fd: FileDesc, stat_buf: *mut StatBuf) -> Result<isize> {
     from_user::check_mut_ptr(stat_buf)?;
 
-    let stat = file_ops::do_fstat(fd)?;
+    let stat = file_ops::do_fstat(fd).await?;
     unsafe {
         stat_buf.write(stat);
     }
@@ -333,7 +333,7 @@ pub async fn do_chdir(path: *const i8) -> Result<isize> {
 }
 
 pub async fn do_fchdir(fd: FileDesc) -> Result<isize> {
-    fs_ops::do_fchdir(fd)?;
+    fs_ops::do_fchdir(fd).await?;
     Ok(0)
 }
 
@@ -516,7 +516,7 @@ pub async fn do_chmod(path: *const i8, mode: u16) -> Result<isize> {
 
 pub async fn do_fchmod(fd: FileDesc, mode: u16) -> Result<isize> {
     let mode = FileMode::from_bits_truncate(mode);
-    file_ops::do_fchmod(fd, mode)?;
+    file_ops::do_fchmod(fd, mode).await?;
     Ok(0)
 }
 
@@ -540,7 +540,7 @@ pub async fn do_chown(path: *const i8, uid: u32, gid: u32) -> Result<isize> {
 }
 
 pub async fn do_fchown(fd: FileDesc, uid: u32, gid: u32) -> Result<isize> {
-    file_ops::do_fchown(fd, uid, gid)?;
+    file_ops::do_fchown(fd, uid, gid).await?;
     Ok(0)
 }
 
@@ -633,7 +633,7 @@ pub async fn do_mount(
         MountOptions::from_fs_type_and_options(&fs_type, options)?
     };
 
-    fs_ops::do_mount(&source, &target, flags, mount_options)?;
+    fs_ops::do_mount(&source, &target, flags, mount_options).await?;
     Ok(0)
 }
 
@@ -643,7 +643,7 @@ pub async fn do_umount(target: *const i8, flags: u32) -> Result<isize> {
         .into_owned();
     let flags = UmountFlags::from_u32(flags)?;
 
-    fs_ops::do_umount(&target, flags)?;
+    fs_ops::do_umount(&target, flags).await?;
     Ok(0)
 }
 
@@ -662,7 +662,7 @@ pub async fn do_fallocate(fd: FileDesc, mode: u32, offset: off_t, len: off_t) ->
 pub async fn do_fstatfs(fd: FileDesc, statfs_buf: *mut Statfs) -> Result<isize> {
     from_user::check_mut_ptr(statfs_buf)?;
 
-    let statfs = fs_ops::do_fstatfs(fd)?;
+    let statfs = fs_ops::do_fstatfs(fd).await?;
     unsafe {
         statfs_buf.write(statfs);
     }
@@ -789,7 +789,7 @@ async fn do_utimes_wrapper(
     flags: i32,
 ) -> Result<()> {
     if path.is_null() && dirfd != AT_FDCWD {
-        file_ops::do_utimes_fd(dirfd as FileDesc, atime, mtime, flags)?;
+        file_ops::do_utimes_fd(dirfd as FileDesc, atime, mtime, flags).await?;
     } else {
         let path = from_user::clone_cstring_safely(path)?
             .to_string_lossy()

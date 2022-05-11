@@ -9,7 +9,7 @@ pub async fn do_readlinkat(fs_path: &FsPath, buf: &mut [u8]) -> Result<usize> {
             let fs = current.fs().read().unwrap();
             fs.lookup_inode_no_follow(fs_path).await?
         };
-        if inode.metadata()?.type_ != FileType::SymLink {
+        if inode.metadata().await?.type_ != FileType::SymLink {
             return_errno!(EINVAL, "not a symbolic link");
         }
         inode.read_link().await?

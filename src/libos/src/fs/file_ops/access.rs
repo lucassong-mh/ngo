@@ -62,7 +62,7 @@ pub async fn do_faccessat(
     }
     // Check the permissions of file owner
     let owner_file_mode = {
-        let metadata = inode.metadata()?;
+        let metadata = inode.metadata().await?;
         AccessibilityCheckMode::from_u32((metadata.mode >> 6) as u32 & 0b111)?
     };
     if !owner_file_mode.contains(mode) {

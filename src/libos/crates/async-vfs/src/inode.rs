@@ -15,12 +15,12 @@ pub trait AsyncInode: Any + Sync + Send {
     async fn write_at(&self, offset: usize, buf: &[u8]) -> Result<usize>;
 
     /// Get metadata of the INode
-    fn metadata(&self) -> Result<Metadata> {
+    async fn metadata(&self) -> Result<Metadata> {
         return_errno!(ENOSYS, "not support");
     }
 
     /// Set metadata of the INode
-    fn set_metadata(&self, _metadata: &Metadata) -> Result<()> {
+    async fn set_metadata(&self, _metadata: &Metadata) -> Result<()> {
         return_errno!(ENOSYS, "not support");
     }
 
@@ -112,7 +112,7 @@ pub trait AsyncInode: Any + Sync + Send {
         path: &str,
         max_follow_times: usize,
     ) -> Result<Arc<dyn AsyncInode>> {
-        if self.metadata()?.type_ != FileType::Dir {
+        if self.metadata().await?.type_ != FileType::Dir {
             return_errno!(ENOTDIR, "not dir");
         }
         if path.len() > PATH_MAX {
@@ -123,7 +123,7 @@ pub trait AsyncInode: Any + Sync + Send {
         let mut result = self.find(".").await?;
         let mut rest_path = String::from(path);
         while rest_path != "" {
-            if result.metadata()?.type_ != FileType::Dir {
+            if result.metadata().await?.type_ != FileType::Dir {
                 return_errno!(ENOTDIR, "not dir");
             }
             // handle absolute path
@@ -148,7 +148,7 @@ pub trait AsyncInode: Any + Sync + Send {
             }
             let inode = result.find(&name).await?;
             // Handle symlink
-            if inode.metadata()?.type_ == FileType::SymLink && max_follow_times > 0 {
+            if inode.metadata().await?.type_ == FileType::SymLink && max_follow_times > 0 {
                 if follow_times >= max_follow_times {
                     return_errno!(ELOOP, "too many symlinks");
                 }
@@ -189,5 +189,5 @@ pub trait AsyncFileSystem: Sync + Send {
     async fn root_inode(&self) -> Arc<dyn AsyncInode>;
 
     /// Get the file system information
-    fn info(&self) -> FsInfo;
+    async fn info(&self) -> FsInfo;
 }
