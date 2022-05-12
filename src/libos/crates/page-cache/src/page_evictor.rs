@@ -1,7 +1,5 @@
 use crate::page_cache::PageCacheInner;
-use crate::page_handle::PageKey;
 use crate::prelude::*;
-use crate::PageCache;
 use block_device::AnyMap;
 use lazy_static::lazy_static;
 #[cfg(feature = "sgx")]
@@ -18,15 +16,14 @@ use std::time::Duration;
 /// Page evictor.
 ///
 /// Page caches (`PageCache<K, A>`) using the same memory allocator
-/// (`A: GlobalAllocExt`) shares a common page evictor, which flushes
+/// (`A: PageAlloc`) shares a common page evictor, which flushes
 /// dirty pages and evict pages for the page caches when
 /// the memory allocator's free memory is low.
-// pub(crate) struct PageEvictor<A>;
-pub(crate) struct PageEvictor<K: PageKey, A: GlobalAllocExt> {
+pub(crate) struct PageEvictor<K: PageKey, A: PageAlloc> {
     marker: PhantomData<(K, A)>,
 }
 
-impl<K: PageKey, A: GlobalAllocExt> PageEvictor<K, A> {
+impl<K: PageKey, A: PageAlloc> PageEvictor<K, A> {
     /// Register a page cache.
     ///
     /// This is called in the constructor of a page
@@ -55,22 +52,22 @@ impl<K: PageKey, A: GlobalAllocExt> PageEvictor<K, A> {
 }
 
 #[derive(Clone)]
-struct EvictorTask<K: PageKey, A: GlobalAllocExt>(Arc<EvictorTaskInner<K, A>>);
+struct EvictorTask<K: PageKey, A: PageAlloc>(Arc<EvictorTaskInner<K, A>>);
 
-impl<K: PageKey, A: GlobalAllocExt> std::fmt::Debug for EvictorTask<K, A> {
+impl<K: PageKey, A: PageAlloc> std::fmt::Debug for EvictorTask<K, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "[PageEvictor EvictorTask]")
     }
 }
 
-struct EvictorTaskInner<K: PageKey, A: GlobalAllocExt> {
+struct EvictorTaskInner<K: PageKey, A: PageAlloc> {
     caches: Mutex<Vec<Arc<PageCacheInner<K, A>>>>,
     wq: WaiterQueue,
     is_dropped: AtomicBool,
     marker: PhantomData<(K, A)>,
 }
 
-impl<K: PageKey, A: GlobalAllocExt> EvictorTask<K, A> {
+impl<K: PageKey, A: PageAlloc> EvictorTask<K, A> {
     pub fn new() -> Self {
         let new_self = { Self(Arc::new(EvictorTaskInner::new())) };
 
@@ -88,7 +85,7 @@ impl<K: PageKey, A: GlobalAllocExt> EvictorTask<K, A> {
     }
 }
 
-impl<K: PageKey, A: GlobalAllocExt> EvictorTaskInner<K, A> {
+impl<K: PageKey, A: PageAlloc> EvictorTaskInner<K, A> {
     pub fn new() -> Self {
         EvictorTaskInner {
             caches: Mutex::new(Vec::new()),

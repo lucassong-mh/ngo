@@ -17,8 +17,8 @@ extern crate sgx_libc as libc;
 extern crate log;
 
 pub mod cached_disk;
-pub mod global_alloc_ext;
 mod page;
+pub mod page_alloc;
 pub mod page_cache;
 mod page_evictor;
 pub mod page_handle;
@@ -28,11 +28,12 @@ mod tests;
 pub mod util;
 
 pub use self::cached_disk::CachedDisk;
-pub use self::global_alloc_ext::GlobalAllocExt;
 use self::page::Page;
+pub use self::page_alloc::PageAlloc;
 pub use self::page_cache::PageCache;
 pub use self::page_cache::PageCacheFlusher;
 use self::page_evictor::PageEvictor;
 pub use self::page_handle::PageHandle;
+pub use self::page_handle::PageKey;
 pub use self::page_state::PageState;
 pub use self::util::lru_cache::LruCache;

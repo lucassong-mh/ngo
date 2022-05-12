@@ -1,24 +1,28 @@
 use crate::prelude::*;
 
 use std::alloc::Layout;
+use std::marker::PhantomData;
 use std::ptr::NonNull;
 
 /// A page obtained from an allocator.
-pub struct Page<A: GlobalAllocExt> {
+pub struct Page<A: PageAlloc> {
     // Alternative: AtomicPtr<u8>
     ptr: NonNull<u8>,
-    allocator: A,
+    marker: PhantomData<A>,
 }
 
-// Safety. GlobalAllocExt implements Send and Sync.
-unsafe impl<A: GlobalAllocExt> Send for Page<A> {}
-unsafe impl<A: GlobalAllocExt> Sync for Page<A> {}
+// Safety. PageAlloc implements Send and Sync.
+unsafe impl<A: PageAlloc> Send for Page<A> {}
+unsafe impl<A: PageAlloc> Sync for Page<A> {}
 
-impl<A: GlobalAllocExt> Page<A> {
-    pub fn alloc_from(allocator: A) -> Option<Self> {
-        let ptr = unsafe { allocator.alloc(Self::layout()) };
+impl<A: PageAlloc> Page<A> {
+    pub fn new() -> Option<Self> {
+        let ptr = A::alloc_page(Self::layout());
         let ptr = NonNull::new(ptr)?;
-        Some(Self { ptr, allocator })
+        Some(Self {
+            ptr,
+            marker: PhantomData,
+        })
     }
 
     pub fn as_slice(&self) -> &[u8] {
@@ -42,8 +46,8 @@ impl<A: GlobalAllocExt> Page<A> {
     }
 }
 
-impl<A: GlobalAllocExt> Drop for Page<A> {
+impl<A: PageAlloc> Drop for Page<A> {
     fn drop(&mut self) {
-        unsafe { self.allocator.dealloc(self.ptr.as_ptr(), Self::layout()) }
+        A::dealloc_page(self.ptr.as_ptr(), Self::layout());
     }
 }

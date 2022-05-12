@@ -4,7 +4,7 @@ use async_rt::wait::{Waiter, WaiterQueue};
 use async_trait::async_trait;
 use block_device::{BlockDevice, BlockDeviceExt};
 use errno::prelude::Result;
-use page_cache::{global_alloc_ext::MyAlloc, PageCache, PageCacheFlusher, PageHandle, PageState};
+use page_cache::{impl_page_alloc, PageCache, PageCacheFlusher, PageHandle, PageState};
 
 use spin::{Mutex, RwLock};
 use std::sync::{
@@ -15,9 +15,11 @@ use std::time::Duration;
 
 pub(crate) struct SFSCache(Arc<Inner>);
 
+impl_page_alloc! { SFSPageAlloc, 1024 * 1024 * 512 }
+
 struct Inner {
     device: Arc<dyn BlockDevice>,
-    cache: PageCache<BlockId, MyAlloc>,
+    cache: PageCache<BlockId, SFSPageAlloc>,
     flusher_wq: WaiterQueue,
     // This read-write lock is used to control the concurrent
     // writers and flushers. A writer acquires the read lock,
@@ -275,7 +277,7 @@ impl Inner {
         Ok(num_blocks.min(max_blocks))
     }
 
-    async fn acquire_page(&self, block_id: BlockId) -> Result<PageHandle<BlockId, MyAlloc>> {
+    async fn acquire_page(&self, block_id: BlockId) -> Result<PageHandle<BlockId, SFSPageAlloc>> {
         loop {
             if let Some(page_handle) = self.cache.acquire(block_id) {
                 break Ok(page_handle);
@@ -301,15 +303,15 @@ impl Inner {
         self.device.write(offset, buf).await
     }
 
-    fn clear_page_events(page_handle: &PageHandle<BlockId, MyAlloc>) {
+    fn clear_page_events(page_handle: &PageHandle<BlockId, SFSPageAlloc>) {
         page_handle.pollee().reset_events();
     }
 
-    fn notify_page_events(page_handle: &PageHandle<BlockId, MyAlloc>, events: Events) {
+    fn notify_page_events(page_handle: &PageHandle<BlockId, SFSPageAlloc>, events: Events) {
         page_handle.pollee().add_events(events)
     }
 
-    async fn wait_page_events(page_handle: &PageHandle<BlockId, MyAlloc>, events: Events) {
+    async fn wait_page_events(page_handle: &PageHandle<BlockId, SFSPageAlloc>, events: Events) {
         let mut poller = Poller::new();
         if page_handle
             .pollee()

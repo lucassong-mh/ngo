@@ -1,6 +1,4 @@
-use crate::page_handle::PageKey;
 use crate::prelude::*;
-use crate::{GlobalAllocExt, PageCache, PageCacheFlusher, PageHandle, PageState};
 use block_device::{BlockDevice, BlockDeviceExt, BlockId, BLOCK_SIZE};
 
 use std::sync::{
@@ -23,11 +21,11 @@ use std::time::Duration;
 ///
 /// The memory allocator for the page cache is specified
 /// by the generic parameter `A` of `CachedDisk<A>`.
-pub struct CachedDisk<A: GlobalAllocExt>(Arc<Inner<A>>);
+pub struct CachedDisk<A: PageAlloc>(Arc<Inner<A>>);
 
 impl PageKey for BlockId {}
 
-struct Inner<A: GlobalAllocExt> {
+struct Inner<A: PageAlloc> {
     disk: Arc<dyn BlockDevice>,
     cache: PageCache<BlockId, A>,
     flusher_wq: WaiterQueue,
@@ -44,7 +42,7 @@ struct Inner<A: GlobalAllocExt> {
     is_dropped: AtomicBool,
 }
 
-impl<A: GlobalAllocExt> CachedDisk<A> {
+impl<A: PageAlloc> CachedDisk<A> {
     /// Create a new `CachedDisk`.
     pub fn new(disk: Arc<dyn BlockDevice>) -> Result<Self> {
         let flusher = Arc::new(CachedDiskFlusher::<A>::new());
@@ -96,18 +94,18 @@ impl<A: GlobalAllocExt> CachedDisk<A> {
         });
     }
 
-    /// Read blocks starting from `from_bid` into the given buffer.
+    /// Read cache content from `offset` into the given buffer.
     ///
-    /// The length of buffer must be a multiple of BLOCK_SIZE. On
-    /// success, the number of bytes read is returned.
+    /// The length of buffer and offset can be arbitrary.
+    /// On success, the number of bytes read is returned.
     pub async fn read(&self, offset: usize, buf: &mut [u8]) -> Result<usize> {
         self.0.read(offset, buf).await
     }
 
-    /// Read blocks starting from `from_bid` into the given buffer.
+    /// Write buffer content into cache starting from `offset`.
     ///
-    /// The length of buffer must be a multiple of BLOCK_SIZE. On
-    /// success, the number of bytes written in returned.
+    /// The length of buffer and offset can be arbitrary.
+    /// On success, the number of bytes written in returned.
     pub async fn write(&self, offset: usize, buf: &[u8]) -> Result<usize> {
         self.0.write(offset, buf).await
     }
@@ -118,7 +116,7 @@ impl<A: GlobalAllocExt> CachedDisk<A> {
     }
 }
 
-impl<A: GlobalAllocExt> Drop for CachedDisk<A> {
+impl<A: PageAlloc> Drop for CachedDisk<A> {
     fn drop(&mut self) {
         self.0.is_dropped.store(true, Ordering::Relaxed);
         self.0.flusher_wq.wake_all();
@@ -153,7 +151,7 @@ impl BlockRange {
     }
 }
 
-impl<A: GlobalAllocExt> Inner<A> {
+impl<A: PageAlloc> Inner<A> {
     pub async fn read(&self, offset: usize, buf: &mut [u8]) -> Result<usize> {
         let block_range = self.check_rw_args(offset, buf);
 
@@ -169,10 +167,12 @@ impl<A: GlobalAllocExt> Inner<A> {
             if current_id != block_range.end_id {
                 end_pos = BLOCK_SIZE;
             }
+
             let read_buf = &mut buf[buf_pos..buf_pos + end_pos - begin_pos];
             if read_buf.len() > 0 {
                 read_len += self.read_one_page(current_id, read_buf, begin_pos).await?;
             }
+
             buf_pos += end_pos - begin_pos;
         }
 
@@ -196,12 +196,14 @@ impl<A: GlobalAllocExt> Inner<A> {
             if current_id != block_range.end_id {
                 end_pos = BLOCK_SIZE;
             }
+
             let write_buf = &buf[buf_pos..buf_pos + end_pos - begin_pos];
             if write_buf.len() > 0 {
                 write_len += self
                     .write_one_page(current_id, write_buf, begin_pos)
                     .await?;
             }
+
             buf_pos += end_pos - begin_pos;
         }
         drop(sem);
@@ -219,13 +221,9 @@ impl<A: GlobalAllocExt> Inner<A> {
         block_range
     }
 
-    pub(crate) async fn read_one_page(
-        &self,
-        bid: BlockId,
-        buf: &mut [u8],
-        offset: usize,
-    ) -> Result<usize> {
+    async fn read_one_page(&self, bid: BlockId, buf: &mut [u8], offset: usize) -> Result<usize> {
         assert!(buf.len() + offset <= BLOCK_SIZE);
+
         let page_handle = self.acquire_page(bid).await?;
         let mut page_guard = page_handle.lock();
 
@@ -242,7 +240,7 @@ impl<A: GlobalAllocExt> Inner<A> {
                 PageState::Uninit => {
                     page_guard.set_state(PageState::Fetching);
                     Self::clear_page_events(&page_handle);
-                    let page_ptr = page_guard.page().as_slice_mut();
+                    let page_ptr = page_guard.as_slice_mut();
 
                     let page_slice = unsafe {
                         std::slice::from_raw_parts_mut(page_ptr.as_mut_ptr(), BLOCK_SIZE)
@@ -277,13 +275,7 @@ impl<A: GlobalAllocExt> Inner<A> {
         Ok(read_len)
     }
 
-    pub(crate) async fn write_one_page(
-        &self,
-        bid: BlockId,
-        buf: &[u8],
-        offset: usize,
-    ) -> Result<usize> {
-        println!("[WRITE]");
+    async fn write_one_page(&self, bid: BlockId, buf: &[u8], offset: usize) -> Result<usize> {
         assert!(buf.len() + offset <= BLOCK_SIZE);
 
         let sem = self.rw_lock.read();
@@ -297,7 +289,7 @@ impl<A: GlobalAllocExt> Inner<A> {
                 PageState::Uninit => {
                     // Read latest content of current page from disk before write
                     page_guard.set_state(PageState::Fetching);
-                    let page_ptr = page_guard.page().as_slice_mut();
+                    let page_ptr = page_guard.as_slice_mut();
                     let page_slice = unsafe {
                         std::slice::from_raw_parts_mut(page_ptr.as_mut_ptr(), BLOCK_SIZE)
                     };
@@ -320,7 +312,7 @@ impl<A: GlobalAllocExt> Inner<A> {
         }
 
         let write_len = buf.len();
-        let dst_buf = page_guard.page().as_slice_mut();
+        let dst_buf = page_guard.as_slice_mut();
         dst_buf[offset..offset + write_len].copy_from_slice(buf);
         page_guard.set_state(PageState::Dirty);
 
@@ -331,7 +323,6 @@ impl<A: GlobalAllocExt> Inner<A> {
     }
 
     pub async fn flush(&self) -> Result<usize> {
-        println!("[FLUSH]");
         let mut total_pages = 0;
 
         // let _ = self.arw_lock().write().await;
@@ -346,13 +337,12 @@ impl<A: GlobalAllocExt> Inner<A> {
             }
 
             for page_handle in &flush_pages {
-                let mut page_guard = page_handle.lock();
+                let page_guard = page_handle.lock();
                 debug_assert!(page_guard.state() == PageState::Flushing);
                 Self::clear_page_events(&page_handle);
 
                 let block_id = page_handle.key();
-                let page_ptr = page_guard.page().as_slice();
-
+                let page_ptr = page_guard.as_slice();
                 let page_buf = unsafe { std::slice::from_raw_parts(page_ptr.as_ptr(), BLOCK_SIZE) };
                 drop(page_guard);
 
@@ -425,12 +415,12 @@ impl<A: GlobalAllocExt> Inner<A> {
     }
 }
 
-struct CachedDiskFlusher<A: GlobalAllocExt> {
+struct CachedDiskFlusher<A: PageAlloc> {
     // this_opt => CachedDisk
     this_opt: Mutex<Option<Arc<Inner<A>>>>,
 }
 
-impl<A: GlobalAllocExt> CachedDiskFlusher<A> {
+impl<A: PageAlloc> CachedDiskFlusher<A> {
     pub fn new() -> Self {
         Self {
             this_opt: Mutex::new(None),
@@ -447,7 +437,7 @@ impl<A: GlobalAllocExt> CachedDiskFlusher<A> {
 }
 
 #[async_trait]
-impl<A: GlobalAllocExt> PageCacheFlusher for CachedDiskFlusher<A> {
+impl<A: PageAlloc> PageCacheFlusher for CachedDiskFlusher<A> {
     async fn flush(&self) -> Result<usize> {
         if let Some(this) = self.this_opt() {
             this.flush().await?;

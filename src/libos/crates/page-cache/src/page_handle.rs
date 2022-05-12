@@ -8,20 +8,19 @@ pub trait PageKey: Into<usize> + Copy + Send + Sync + Debug + 'static {}
 
 /// Page handle.
 #[derive(Clone)]
-pub struct PageHandle<K: PageKey, A: GlobalAllocExt>(Arc<Inner<K, A>>);
-struct Inner<K: PageKey, A: GlobalAllocExt> {
+pub struct PageHandle<K: PageKey, A: PageAlloc>(Arc<Inner<K, A>>);
+struct Inner<K: PageKey, A: PageAlloc> {
     key: K,
     pollee: Pollee,
     state_and_page: Mutex<(PageState, Page<A>)>,
 }
 
-impl<K: PageKey, A: GlobalAllocExt> PageHandle<K, A> {
+impl<K: PageKey, A: PageAlloc> PageHandle<K, A> {
     pub(crate) fn new(key: K) -> Self {
-        let allocator: A = A::default();
         Self(Arc::new(Inner {
             key,
             pollee: Pollee::new(Events::IN | Events::OUT),
-            state_and_page: Mutex::new((PageState::Uninit, Page::alloc_from(allocator).unwrap())),
+            state_and_page: Mutex::new((PageState::Uninit, Page::new().unwrap())),
         }))
     }
 
@@ -38,7 +37,7 @@ impl<K: PageKey, A: GlobalAllocExt> PageHandle<K, A> {
     }
 }
 
-impl<K: PageKey, A: GlobalAllocExt> Debug for PageHandle<K, A> {
+impl<K: PageKey, A: PageAlloc> Debug for PageHandle<K, A> {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         let page_guard = self.lock();
         write!(
@@ -50,9 +49,9 @@ impl<K: PageKey, A: GlobalAllocExt> Debug for PageHandle<K, A> {
     }
 }
 
-pub struct PageHandleGuard<'a, A: GlobalAllocExt>(MutexGuard<'a, (PageState, Page<A>)>);
+pub struct PageHandleGuard<'a, A: PageAlloc>(MutexGuard<'a, (PageState, Page<A>)>);
 
-impl<'a, A: GlobalAllocExt> PageHandleGuard<'a, A> {
+impl<'a, A: PageAlloc> PageHandleGuard<'a, A> {
     pub fn state(&self) -> PageState {
         self.0 .0
     }

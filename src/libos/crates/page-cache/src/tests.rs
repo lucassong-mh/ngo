@@ -1,9 +1,13 @@
-use crate::global_alloc_ext::FixedSizeAlloc;
+use crate::impl_page_alloc;
 use crate::prelude::*;
-use crate::{Page, PageCacheFlusher};
+use crate::Page;
 use block_device::{mem_disk::MemDisk, BLOCK_SIZE};
+
 use std::sync::Arc;
 use std::time::Duration;
+
+// MyPageAlloc is a test-purpose allocator
+impl_page_alloc! { MyPageAlloc, 1024 * 1024 * 512 }
 
 /// PageCache tests
 struct SimpleFlusher;
@@ -15,19 +19,19 @@ impl PageCacheFlusher for SimpleFlusher {
     }
 }
 
-fn new_page_cache() -> PageCache<usize, FixedSizeAlloc> {
+fn new_page_cache() -> PageCache<usize, MyPageAlloc> {
     let flusher = Arc::new(SimpleFlusher);
-    PageCache::<usize, FixedSizeAlloc>::new(flusher)
+    PageCache::<usize, MyPageAlloc>::new(flusher)
 }
 
-fn read_page(page_handle: &PageHandle<usize, FixedSizeAlloc>) -> u8 {
+fn read_page(page_handle: &PageHandle<usize, MyPageAlloc>) -> u8 {
     let page_guard = page_handle.lock();
     page_guard.as_slice()[0]
 }
 
-fn write_page(page_handle: &PageHandle<usize, FixedSizeAlloc>, content: u8) {
+fn write_page(page_handle: &PageHandle<usize, MyPageAlloc>, content: u8) {
     let mut page_guard = page_handle.lock();
-    const SIZE: usize = Page::<FixedSizeAlloc>::size();
+    const SIZE: usize = Page::<MyPageAlloc>::size();
     page_guard.as_slice_mut().copy_from_slice(&[content; SIZE]);
 }
 
@@ -121,10 +125,10 @@ fn page_cache_evictor_task() {
 }
 
 /// CachedDisk tests
-fn new_cached_disk() -> CachedDisk<FixedSizeAlloc> {
+fn new_cached_disk() -> CachedDisk<MyPageAlloc> {
     const TOTAL_BLOCKS: usize = 1024 * 1024;
     let mem_disk = MemDisk::new(TOTAL_BLOCKS).unwrap();
-    CachedDisk::<FixedSizeAlloc>::new(Arc::new(mem_disk)).unwrap()
+    CachedDisk::<MyPageAlloc>::new(Arc::new(mem_disk)).unwrap()
 }
 
 #[test]

@@ -1,4 +1,3 @@
-use crate::page_handle::PageKey;
 use crate::prelude::*;
 use crate::LruCache;
 use crate::PageEvictor;
@@ -9,9 +8,9 @@ use std::marker::PhantomData;
 use std::sync::Arc;
 
 /// Page cache.
-pub struct PageCache<K: PageKey, A: GlobalAllocExt>(pub(crate) Arc<PageCacheInner<K, A>>);
+pub struct PageCache<K: PageKey, A: PageAlloc>(pub(crate) Arc<PageCacheInner<K, A>>);
 
-pub(crate) struct PageCacheInner<K: PageKey, A: GlobalAllocExt> {
+pub(crate) struct PageCacheInner<K: PageKey, A: PageAlloc> {
     id: ObjectId,
     flusher: Arc<dyn PageCacheFlusher>,
     cache: Mutex<LruCache<usize, PageHandle<K, A>>>,
@@ -38,7 +37,7 @@ pub trait PageCacheFlusher: Send + Sync {
     async fn flush(&self) -> Result<usize>;
 }
 
-impl<K: PageKey, A: GlobalAllocExt> PageCache<K, A> {
+impl<K: PageKey, A: PageAlloc> PageCache<K, A> {
     /// Create a page cache.
     pub fn new(flusher: Arc<dyn PageCacheFlusher>) -> Self {
         let new_self = Self(Arc::new(PageCacheInner::new(flusher)));
@@ -150,7 +149,7 @@ impl<K: PageKey, A: GlobalAllocExt> PageCache<K, A> {
     }
 }
 
-impl<K: PageKey, A: GlobalAllocExt> PageCacheInner<K, A> {
+impl<K: PageKey, A: PageAlloc> PageCacheInner<K, A> {
     pub fn new(flusher: Arc<dyn PageCacheFlusher>) -> Self {
         PageCacheInner {
             id: ObjectId::new(),
@@ -199,7 +198,7 @@ impl<K: PageKey, A: GlobalAllocExt> PageCacheInner<K, A> {
     }
 }
 
-impl<K: PageKey, A: GlobalAllocExt> Drop for PageCache<K, A> {
+impl<K: PageKey, A: PageAlloc> Drop for PageCache<K, A> {
     fn drop(&mut self) {
         PageEvictor::<K, A>::unregister(&self);
     }
