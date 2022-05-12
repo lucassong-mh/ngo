@@ -35,7 +35,7 @@ impl SFSCache {
     pub fn new(device: Arc<dyn BlockDevice>) -> Result<Self> {
         const CAPACITY: usize = 100_000;
         let flusher = Arc::new(SFSFlusher::new());
-        let cache = PageCache::new(CAPACITY, flusher.clone());
+        let cache = PageCache::new(flusher.clone());
         let flusher_wq = WaiterQueue::new();
         let arc_inner = Arc::new(Inner {
             device,

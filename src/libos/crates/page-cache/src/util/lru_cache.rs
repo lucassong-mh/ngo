@@ -69,11 +69,13 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
             self.detach(node);
             node
         });
-        if old_node.is_none() && self.map.len() >= self.cap {
-            let tail = self.tail.unwrap();
-            self.detach(tail);
-            self.map.remove(&KeyRef(tail));
-        }
+        // Comment self-evict policy to avoid mis-behavior of lrucache
+        // e.g., in page-cache, evict dirty pages without flushing.
+        // if old_node.is_none() && self.map.len() >= self.cap {
+        //     let tail = self.tail.unwrap();
+        //     self.detach(tail);
+        //     self.map.remove(&KeyRef(tail));
+        // }
         self.attach(node);
 
         self.map.insert(KeyRef(node), node);
@@ -172,15 +174,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_lru_cache() {
+    fn lru_cache_with_manual_evict() {
         let mut cache = LruCache::<usize, usize>::new(2);
         cache.put(1, 1);
         cache.put(2, 2);
         assert_eq!(*cache.get(&1).unwrap(), 1);
         cache.put(3, 3);
+        assert_eq!(cache.evict().unwrap(), 2);
         assert_eq!(cache.get(&2), None);
         cache.put(5, 5);
-        assert_eq!(cache.get(&1), None);
+        assert_eq!(cache.evict().unwrap(), 1);
         assert_eq!(*cache.get(&3).unwrap(), 3);
         assert_eq!(*cache.get(&5).unwrap(), 5);
     }

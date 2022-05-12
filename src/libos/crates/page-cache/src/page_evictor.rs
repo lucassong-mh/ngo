@@ -13,6 +13,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use std::time::Duration;
 
 /// Page evictor.
 ///
@@ -112,6 +113,7 @@ impl<K: PageKey, A: GlobalAllocExt> EvictorTaskInner<K, A> {
     async fn task_main(&self) {
         let mut waiter = Waiter::new();
         self.wq.enqueue(&mut waiter);
+        const AUTO_EVICT_PERIOD: Duration = Duration::from_secs(5);
         while !self.is_dropped() {
             waiter.reset();
 
@@ -119,7 +121,10 @@ impl<K: PageKey, A: GlobalAllocExt> EvictorTaskInner<K, A> {
                 self.evict_pages().await;
             }
 
-            waiter.wait().await;
+            // Wait until being notified or timeout
+            // waiter.wait().await;
+            let mut timeout = AUTO_EVICT_PERIOD;
+            waiter.wait_timeout(Some(&mut timeout)).await;
         }
         self.wq.dequeue(&mut waiter);
     }
@@ -138,7 +143,7 @@ impl<K: PageKey, A: GlobalAllocExt> EvictorTaskInner<K, A> {
             self.for_each_page_cache(|page_cache| {
                 total_evicted += page_cache.evict(BATCH_SIZE);
             });
-
+            trace!("[PageEvictor] memory low, total evicted: {}", total_evicted);
             if total_evicted == 0 {
                 break;
             }

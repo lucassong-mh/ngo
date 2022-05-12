@@ -13,7 +13,6 @@ pub struct PageCache<K: PageKey, A: GlobalAllocExt>(pub(crate) Arc<PageCacheInne
 
 pub(crate) struct PageCacheInner<K: PageKey, A: GlobalAllocExt> {
     id: ObjectId,
-    capacity: usize,
     flusher: Arc<dyn PageCacheFlusher>,
     cache: Mutex<LruCache<usize, PageHandle<K, A>>>,
     dirty_set: Mutex<HashSet<usize>>,
@@ -41,8 +40,8 @@ pub trait PageCacheFlusher: Send + Sync {
 
 impl<K: PageKey, A: GlobalAllocExt> PageCache<K, A> {
     /// Create a page cache.
-    pub fn new(capacity: usize, flusher: Arc<dyn PageCacheFlusher>) -> Self {
-        let new_self = Self(Arc::new(PageCacheInner::new(capacity, flusher)));
+    pub fn new(flusher: Arc<dyn PageCacheFlusher>) -> Self {
+        let new_self = Self(Arc::new(PageCacheInner::new(flusher)));
         PageEvictor::<K, A>::register(&new_self);
         new_self
     }
@@ -55,14 +54,14 @@ impl<K: PageKey, A: GlobalAllocExt> PageCache<K, A> {
     /// page cache.
     pub fn acquire(&self, key: K) -> Option<PageHandle<K, A>> {
         let mut cache = self.0.cache.lock();
+        // Cache hit
         if let Some(page_handle_incache) = cache.get(&key.into()) {
-            trace!("[PageCache HIT], {:#?}", page_handle_incache);
             let page_guard = page_handle_incache.lock();
             drop(page_guard);
             return Some(page_handle_incache.clone());
+        // Cache miss
         } else {
             let page_handle = PageHandle::new(key);
-            trace!("[PageCache MISS], {:#?}", page_handle);
             cache.put(key.into(), page_handle.clone());
             return Some(page_handle);
         }
@@ -94,7 +93,7 @@ impl<K: PageKey, A: GlobalAllocExt> PageCache<K, A> {
         let mut dirty_set = self.0.dirty_set.lock();
         let set_copy = dirty_set.clone();
         let mut cache = self.0.cache.lock();
-        let mut cnt = 0;
+        let mut flush_num = 0;
         for key in set_copy.iter() {
             if dirty.len() >= dirty.capacity() {
                 break;
@@ -105,12 +104,12 @@ impl<K: PageKey, A: GlobalAllocExt> PageCache<K, A> {
 
                 page_guard.set_state(PageState::Flushing);
                 dirty.push(page_handle_incache.clone());
-                cnt += 1;
+                flush_num += 1;
                 dirty_set.remove(key);
                 drop(page_guard);
             }
         }
-        cnt
+        flush_num
     }
 
     pub fn size(&self) -> usize {
@@ -152,12 +151,11 @@ impl<K: PageKey, A: GlobalAllocExt> PageCache<K, A> {
 }
 
 impl<K: PageKey, A: GlobalAllocExt> PageCacheInner<K, A> {
-    pub fn new(capacity: usize, flusher: Arc<dyn PageCacheFlusher>) -> Self {
+    pub fn new(flusher: Arc<dyn PageCacheFlusher>) -> Self {
         PageCacheInner {
             id: ObjectId::new(),
-            capacity,
             flusher,
-            cache: Mutex::new(LruCache::new(capacity)),
+            cache: Mutex::new(LruCache::new(0)),
             dirty_set: Mutex::new(HashSet::new()),
             pollee: Pollee::new(Events::IN | Events::OUT),
             marker: PhantomData,
@@ -178,23 +176,24 @@ impl<K: PageKey, A: GlobalAllocExt> PageCacheInner<K, A> {
     /// the victim pages.
     pub(crate) fn evict(&self, max_evicted: usize) -> usize {
         let mut cache = self.cache.lock();
-        let num = max_evicted.min(cache.size());
-        let mut cnt = 0;
-        for _ in 0..num {
+        let evict_total = max_evicted.min(cache.size());
+        let mut evict_num = 0;
+        for _ in 0..evict_total {
             if let Some(page_handle) = cache.evict() {
                 let mut page_guard = page_handle.lock();
                 drop(page_guard.page());
-                cnt += 1;
+                evict_num += 1;
                 drop(page_guard);
                 drop(page_handle);
             }
         }
-        cnt
+        evict_num
     }
 
     pub(crate) async fn flush(&self) {
         let nflush = self.flusher.flush().await.unwrap();
         if nflush > 0 {
+            trace!("[PageCache] flush pages: {}", nflush);
             self.pollee.add_events(Events::OUT);
         }
     }
