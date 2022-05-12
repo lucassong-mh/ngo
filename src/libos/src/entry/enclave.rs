@@ -128,9 +128,13 @@ pub extern "C" fn occlum_ecall_init(
         }
         Ok(resolv_conf_str) => {
             *RESOLV_CONF_STR.write().unwrap() = Some(resolv_conf_str);
-            // if let Err(e) = write_host_file(HostFile::RESOLV_CONF) {
-            //     error!("failed to write /etc/resolv.conf: {}", e.backtrace());
-            // }
+            async_rt::task::spawn(unsafe {
+                super::thread::mark_send::mark_send(async {
+                    if let Err(e) = write_host_file(HostFile::RESOLV_CONF).await {
+                        error!("failed to write /etc/resolv.conf: {}", e.backtrace());
+                    }
+                })
+            });
         }
     }
 
@@ -142,9 +146,13 @@ pub extern "C" fn occlum_ecall_init(
         Ok(hostname_str) => {
             misc::init_nodename(&hostname_str);
             *HOSTNAME_STR.write().unwrap() = Some(hostname_str);
-            // if let Err(e) = write_host_file(HostFile::HOSTNAME) {
-            //     error!("failed to write /etc/hostname: {}", e.backtrace());
-            // }
+            async_rt::task::spawn(unsafe {
+                super::thread::mark_send::mark_send(async {
+                    if let Err(e) = write_host_file(HostFile::HOSTNAME).await {
+                        error!("failed to write /etc/hostname: {}", e.backtrace());
+                    }
+                })
+            });
         }
     }
 
@@ -155,9 +163,13 @@ pub extern "C" fn occlum_ecall_init(
         }
         Ok(hosts_str) => {
             *HOSTS_STR.write().unwrap() = Some(hosts_str);
-            // if let Err(e) = write_host_file(HostFile::HOSTS) {
-            //     error!("failed to write /etc/hosts: {}", e.backtrace());
-            // }
+            async_rt::task::spawn(unsafe {
+                super::thread::mark_send::mark_send(async {
+                    if let Err(e) = write_host_file(HostFile::HOSTS).await {
+                        error!("failed to write /etc/hosts: {}", e.backtrace());
+                    }
+                })
+            });
         }
     }
 
@@ -249,6 +261,14 @@ pub extern "C" fn occlum_ecall_shutdown_vcpus() -> i32 {
     crate::signal::do_kill_from_outside_enclave(ProcessFilter::WithAnyPid, SIGKILL);
 
     table::wait_all_process_exit();
+
+    // Flush the async fs
+    async_rt::task::spawn(unsafe {
+        super::thread::mark_send::mark_send(async {
+            use async_vfs::AsyncFileSystem;
+            crate::fs::ASYNC_SFS.get().await.sync().await.unwrap();
+        })
+    });
 
     // TODO: stop all the kernel threads/tasks
     async_rt::executor::shutdown();
