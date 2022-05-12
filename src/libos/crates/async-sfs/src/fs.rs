@@ -1,10 +1,10 @@
-use crate::cache::SFSCache;
 use crate::prelude::*;
 use crate::structs::*;
 use crate::utils::{BlockRangeIter, Dirty};
 use async_trait::async_trait;
 use async_vfs::{AsyncFileSystem, AsyncInode};
 use block_device::{BlockDevice, BlockDeviceExt};
+use page_cache::{impl_page_alloc, CachedDisk};
 
 use bitvec::prelude::*;
 use std::any::Any;
@@ -777,7 +777,7 @@ impl AsyncSimpleFS {
             free_map: AsyncRwLock::new(Dirty::new(BitVec::from(freemap_disk.as_slice()))),
             inodes: AsyncRwLock::new(BTreeMap::new()),
             #[cfg(feature = "pagecache")]
-            storage: SFSStorage::from_page_cache(SFSCache::new(device).unwrap()),
+            storage: SFSStorage::from_page_cache(CachedDisk::<SFSPageAlloc>::new(device).unwrap()),
             #[cfg(not(feature = "pagecache"))]
             storage: SFSStorage::from_device(device),
             self_ptr: Weak::default(),
@@ -813,7 +813,7 @@ impl AsyncSimpleFS {
             free_map: AsyncRwLock::new(Dirty::new_dirty(free_map)),
             inodes: AsyncRwLock::new(BTreeMap::new()),
             #[cfg(feature = "pagecache")]
-            storage: SFSStorage::from_page_cache(SFSCache::new(device).unwrap()),
+            storage: SFSStorage::from_page_cache(CachedDisk::<SFSPageAlloc>::new(device).unwrap()),
             #[cfg(not(feature = "pagecache"))]
             storage: SFSStorage::from_device(device),
             self_ptr: Weak::default(),
@@ -1040,9 +1040,13 @@ impl FsInner {
     }
 }
 
+/// Define a page allocator `SFSPageAlloc: PageAlloc`
+/// with total bytes to let fs use page cache.
+impl_page_alloc! { SFSPageAlloc, 1024 * 1024 * 512 }
+
 enum SFSStorage {
     Device(Arc<dyn BlockDevice>),
-    PageCache(SFSCache),
+    PageCache(CachedDisk<SFSPageAlloc>),
 }
 
 impl SFSStorage {
@@ -1050,7 +1054,7 @@ impl SFSStorage {
         Self::Device(device)
     }
 
-    pub fn from_page_cache(cache: SFSCache) -> Self {
+    pub fn from_page_cache(cache: CachedDisk<SFSPageAlloc>) -> Self {
         Self::PageCache(cache)
     }
 
@@ -1063,9 +1067,10 @@ impl SFSStorage {
         let mut s: T = unsafe { MaybeUninit::uninit().assume_init() };
         let s_mut_buf = s.as_buf_mut();
         debug_assert!(offset + s_mut_buf.len() <= BLOCK_SIZE);
+        let device_offset = id * BLOCK_SIZE + offset;
         let len = match self {
-            Self::Device(device) => device.read(id * BLOCK_SIZE + offset, s_mut_buf).await?,
-            Self::PageCache(cache) => cache.read(id, s_mut_buf, offset).await?,
+            Self::Device(device) => device.read(device_offset, s_mut_buf).await?,
+            Self::PageCache(cache) => cache.read(device_offset, s_mut_buf).await?,
         };
         debug_assert!(len == s_mut_buf.len());
         Ok(s)
@@ -1080,9 +1085,10 @@ impl SFSStorage {
     ) -> Result<()> {
         let s_buf = s.as_buf();
         debug_assert!(offset + s_buf.len() <= BLOCK_SIZE);
+        let device_offset = id * BLOCK_SIZE + offset;
         let len = match self {
-            Self::Device(device) => device.write(id * BLOCK_SIZE + offset, s_buf).await?,
-            Self::PageCache(cache) => cache.write(id, s_buf, offset).await?,
+            Self::Device(device) => device.write(device_offset, s_buf).await?,
+            Self::PageCache(cache) => cache.write(device_offset, s_buf).await?,
         };
         debug_assert!(len == s_buf.len());
         Ok(())
@@ -1090,23 +1096,19 @@ impl SFSStorage {
 
     /// Read blocks starting from the offset of block into the given buffer.
     async fn read_at(&self, id: BlockId, buf: &mut [u8], offset: usize) -> Result<usize> {
+        let device_offset = id * BLOCK_SIZE + offset;
         match self {
-            Self::Device(device) => {
-                let device_offset = id * BLOCK_SIZE + offset;
-                device.read(device_offset, buf).await
-            }
-            Self::PageCache(cache) => cache.read(id, buf, offset).await,
+            Self::Device(device) => device.read(device_offset, buf).await,
+            Self::PageCache(cache) => cache.read(device_offset, buf).await,
         }
     }
 
     /// Write buffer at the blocks starting from the offset of block.
     async fn write_at(&self, id: BlockId, buf: &[u8], offset: usize) -> Result<usize> {
+        let device_offset = id * BLOCK_SIZE + offset;
         match self {
-            Self::Device(device) => {
-                let device_offset = id * BLOCK_SIZE + offset;
-                device.write(device_offset, buf).await
-            }
-            Self::PageCache(cache) => cache.write(id, buf, offset).await,
+            Self::Device(device) => device.write(device_offset, buf).await,
+            Self::PageCache(cache) => cache.write(device_offset, buf).await,
         }
     }
 
