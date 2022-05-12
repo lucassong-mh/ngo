@@ -35,9 +35,7 @@ struct Inner<A: PageAlloc> {
     // acquires the write lock to forbid any other flushers
     // and writers. This policy is important to implement
     // the semantic of the flush operation correctly.
-    // TODO: Async lock
-    // arw_lock: AsyncRwLock,
-    rw_lock: RwLock<usize>,
+    arw_lock: AsyncRwLock<usize>,
     // Whether CachedDisk is droppedd
     is_dropped: AtomicBool,
 }
@@ -52,8 +50,7 @@ impl<A: PageAlloc> CachedDisk<A> {
             disk,
             cache,
             flusher_wq,
-            // arw_lock: AsyncRwLock::new(),
-            rw_lock: RwLock::new(0),
+            arw_lock: AsyncRwLock::new(0),
             is_dropped: AtomicBool::new(false),
         });
         let new_self = Self(arc_inner);
@@ -182,7 +179,6 @@ impl<A: PageAlloc> Inner<A> {
 
     pub async fn write(&self, offset: usize, buf: &[u8]) -> Result<usize> {
         let block_range = self.check_rw_args(offset, buf);
-        let sem = self.rw_lock.read();
 
         let mut buf_pos = 0;
         let mut write_len = 0;
@@ -206,7 +202,6 @@ impl<A: PageAlloc> Inner<A> {
 
             buf_pos += end_pos - begin_pos;
         }
-        drop(sem);
 
         assert_eq!(write_len, buf.len(), "[CachedDisk] write failed");
         Ok(write_len)
@@ -277,8 +272,7 @@ impl<A: PageAlloc> Inner<A> {
 
     async fn write_one_page(&self, bid: BlockId, buf: &[u8], offset: usize) -> Result<usize> {
         assert!(buf.len() + offset <= BLOCK_SIZE);
-
-        let sem = self.rw_lock.read();
+        let _ = self.arw_lock.read().await;
 
         let page_handle = self.acquire_page(bid).await?;
         let mut page_guard = page_handle.lock();
@@ -318,15 +312,13 @@ impl<A: PageAlloc> Inner<A> {
 
         drop(page_guard);
         self.cache.release(&page_handle);
-        drop(sem);
         Ok(write_len)
     }
 
     pub async fn flush(&self) -> Result<usize> {
         let mut total_pages = 0;
 
-        // let _ = self.arw_lock().write().await;
-        let sem = self.rw_lock.write();
+        let _ = self.arw_lock.write().await;
 
         const BATCH_SIZE: usize = 128;
         let mut flush_pages = Vec::with_capacity(BATCH_SIZE);
@@ -359,7 +351,6 @@ impl<A: PageAlloc> Inner<A> {
         }
 
         self.disk.flush().await?;
-        drop(sem);
         // At this point, we can be certain that all writes
         // have been persisted to the disk because
         // 1) There are no concurrent writers;
