@@ -110,7 +110,7 @@ impl<K: PageKey, A: PageAlloc> EvictorTaskInner<K, A> {
     async fn task_main(&self) {
         let mut waiter = Waiter::new();
         self.wq.enqueue(&mut waiter);
-        const AUTO_EVICT_PERIOD: Duration = Duration::from_secs(5);
+        const AUTO_EVICT_PERIOD: Duration = Duration::from_secs(1);
         while !self.is_dropped() {
             waiter.reset();
 

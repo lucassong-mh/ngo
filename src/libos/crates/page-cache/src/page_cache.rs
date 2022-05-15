@@ -104,9 +104,9 @@ impl<K: PageKey, A: PageAlloc> PageCache<K, A> {
                 page_guard.set_state(PageState::Flushing);
                 dirty.push(page_handle_incache.clone());
                 flush_num += 1;
-                dirty_set.remove(key);
                 drop(page_guard);
             }
+            dirty_set.remove(key);
         }
         flush_num
     }
@@ -156,7 +156,7 @@ impl<K: PageKey, A: PageAlloc> PageCacheInner<K, A> {
             flusher,
             cache: Mutex::new(LruCache::new(0)),
             dirty_set: Mutex::new(HashSet::new()),
-            pollee: Pollee::new(Events::IN | Events::OUT),
+            pollee: Pollee::new(Events::empty()),
             marker: PhantomData,
         }
     }

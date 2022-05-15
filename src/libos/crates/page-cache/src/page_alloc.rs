@@ -30,7 +30,7 @@ impl FixedSizePageAlloc {
             total_bytes,
             remain_bytes: Arc::new(AtomicUsize::new(total_bytes)),
         };
-        trace!("[FixedSizePageAlloc] {:#?}", new_self);
+        trace!("[PageAlloc] {:#?}", new_self);
         new_self
     }
 
@@ -47,8 +47,12 @@ impl FixedSizePageAlloc {
     }
 
     pub fn is_memory_low(&self) -> bool {
-        const ALLOC_LIMIT: usize = 0x1_0000;
-        self.remain_bytes.load(Ordering::Relaxed) < ALLOC_LIMIT
+        const ALLOC_LIMIT: usize = 0x10_0000;
+        if self.remain_bytes.load(Ordering::Relaxed) < ALLOC_LIMIT {
+            trace!("[PageAlloc] memory low, {:#?}", self);
+            return true;
+        }
+        false
     }
 }
 

@@ -179,6 +179,7 @@ impl<A: PageAlloc> Inner<A> {
 
     pub async fn write(&self, offset: usize, buf: &[u8]) -> Result<usize> {
         let block_range = self.check_rw_args(offset, buf);
+        let sem = self.arw_lock.read().await;
 
         let mut buf_pos = 0;
         let mut write_len = 0;
@@ -202,6 +203,7 @@ impl<A: PageAlloc> Inner<A> {
 
             buf_pos += end_pos - begin_pos;
         }
+        drop(sem);
 
         assert_eq!(write_len, buf.len(), "[CachedDisk] write failed");
         Ok(write_len)
@@ -272,7 +274,6 @@ impl<A: PageAlloc> Inner<A> {
 
     async fn write_one_page(&self, bid: BlockId, buf: &[u8], offset: usize) -> Result<usize> {
         assert!(buf.len() + offset <= BLOCK_SIZE);
-        let _ = self.arw_lock.read().await;
 
         let page_handle = self.acquire_page(bid).await?;
         let mut page_guard = page_handle.lock();
@@ -282,14 +283,13 @@ impl<A: PageAlloc> Inner<A> {
             match page_guard.state() {
                 PageState::Uninit => {
                     // Read latest content of current page from disk before write
-                    page_guard.set_state(PageState::Fetching);
                     let page_ptr = page_guard.as_slice_mut();
                     let page_slice = unsafe {
                         std::slice::from_raw_parts_mut(page_ptr.as_mut_ptr(), BLOCK_SIZE)
                     };
 
                     self.read_block(bid, page_slice).await.unwrap();
-                    page_guard.set_state(PageState::UpToDate);
+                    break;
                 }
                 // The page is ready for write
                 PageState::UpToDate | PageState::Dirty => {
@@ -317,12 +317,11 @@ impl<A: PageAlloc> Inner<A> {
 
     pub async fn flush(&self) -> Result<usize> {
         let mut total_pages = 0;
+        let sem = self.arw_lock.write().await;
 
-        let _ = self.arw_lock.write().await;
-
-        const BATCH_SIZE: usize = 128;
-        let mut flush_pages = Vec::with_capacity(BATCH_SIZE);
+        const FLUSH_BATCH_SIZE: usize = 128;
         loop {
+            let mut flush_pages = Vec::with_capacity(FLUSH_BATCH_SIZE);
             let num_pages = self.cache.flush_dirty(&mut flush_pages);
             if num_pages == 0 {
                 break;
@@ -351,6 +350,7 @@ impl<A: PageAlloc> Inner<A> {
         }
 
         self.disk.flush().await?;
+        drop(sem);
         // At this point, we can be certain that all writes
         // have been persisted to the disk because
         // 1) There are no concurrent writers;
@@ -391,7 +391,7 @@ impl<A: PageAlloc> Inner<A> {
     }
 
     fn notify_page_events(page_handle: &PageHandle<BlockId, A>, events: Events) {
-        page_handle.pollee().add_events(events)
+        page_handle.pollee().add_events(events);
     }
 
     async fn wait_page_events(page_handle: &PageHandle<BlockId, A>, events: Events) {

@@ -16,11 +16,14 @@ unsafe impl<A: PageAlloc> Send for Page<A> {}
 unsafe impl<A: PageAlloc> Sync for Page<A> {}
 
 impl<A: PageAlloc> Page<A> {
-    pub fn new() -> Option<Self> {
+    pub fn new() -> Result<Self> {
         let ptr = A::alloc_page(Self::layout());
-        let ptr = NonNull::new(ptr)?;
-        Some(Self {
-            ptr,
+        let ptr = NonNull::new(ptr);
+        if ptr.is_none() {
+            return_errno!(ENOMEM, "page alloc failed, not enough memory");
+        }
+        Ok(Self {
+            ptr: ptr.unwrap(),
             marker: PhantomData,
         })
     }

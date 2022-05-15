@@ -185,8 +185,7 @@ fn cached_disk_flush() -> Result<()> {
             assert_eq!(SIZE, len, "[CachedDisk] write failed");
         }
         let flush_num = cached_disk.flush().await?;
-        const FLUSH_BATCH_SIZE: usize = 128;
-        assert_eq!(flush_num, FLUSH_BATCH_SIZE, "[CachedDisk] flush failed");
+        assert_eq!(flush_num, write_cnt, "[CachedDisk] flush failed");
         Ok(())
     })
 }

@@ -19,7 +19,7 @@ impl<K: PageKey, A: PageAlloc> PageHandle<K, A> {
     pub(crate) fn new(key: K) -> Self {
         Self(Arc::new(Inner {
             key,
-            pollee: Pollee::new(Events::IN | Events::OUT),
+            pollee: Pollee::new(Events::empty()),
             state_and_page: Mutex::new((PageState::Uninit, Page::new().unwrap())),
         }))
     }
