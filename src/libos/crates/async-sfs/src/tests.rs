@@ -506,3 +506,25 @@ fn nlinks() -> Result<()> {
         Ok(())
     })
 }
+
+#[test]
+fn ext() -> Result<()> {
+    async_rt::task::block_on(async move {
+        let sfs = _create_new_sfs().await;
+        let root = sfs.root_inode().await;
+        let file1 = root.create("file1", VfsFileType::File, 0o777).await?;
+
+        #[derive(Clone)]
+        struct MyStruct(usize);
+        impl async_io::fs::AnyExt for MyStruct {}
+
+        let ext = file1.ext().unwrap();
+        assert_eq!(ext.get::<MyStruct>().is_none(), true);
+        let val = MyStruct(0xff);
+        ext.put::<MyStruct>(Arc::new(val.clone()));
+        assert_eq!(ext.get::<MyStruct>().is_some(), true);
+        assert_eq!(ext.get::<MyStruct>().unwrap().0, val.0);
+        sfs.sync().await?;
+        Ok(())
+    })
+}

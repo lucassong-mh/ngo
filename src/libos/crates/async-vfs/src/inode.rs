@@ -1,6 +1,6 @@
 use crate::prelude::*;
 
-use async_io::fs::{FileType, FsInfo, Metadata, PATH_MAX};
+use async_io::fs::{Extension, FileType, FsInfo, Metadata, PATH_MAX};
 use async_io::ioctl::IoctlCmd;
 use async_trait::async_trait;
 use std::any::Any;
@@ -94,6 +94,11 @@ pub trait AsyncInode: Any + Sync + Send {
     /// Get the file system of the INode
     fn fs(&self) -> Arc<dyn AsyncFileSystem> {
         unimplemented!();
+    }
+
+    /// Get the extension of this inode
+    fn ext(&self) -> Option<&Extension> {
+        None
     }
 
     /// This is used to implement dynamics cast.

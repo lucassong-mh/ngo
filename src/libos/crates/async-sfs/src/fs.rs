@@ -341,6 +341,10 @@ impl AsyncInode for SFSInode {
         self.inner().fs()
     }
 
+    fn ext(&self) -> Option<&Extension> {
+        Some(&self.inner().ext)
+    }
+
     fn as_any_ref(&self) -> &dyn Any {
         self
     }
@@ -360,6 +364,8 @@ pub(crate) struct InodeInner {
     disk_inode: AsyncRwLock<Dirty<DiskInode>>,
     /// Reference to SFS, used by almost all operations
     fs: Weak<AsyncSimpleFS>,
+    /// Extensions for Inode, e.g., flock
+    ext: Extension,
 }
 
 impl Debug for InodeInner {
@@ -953,6 +959,7 @@ impl FsInner {
                 id,
                 disk_inode: AsyncRwLock::new(disk_inode),
                 fs: self.self_ptr.clone(),
+                ext: Extension::new(),
             };
             Arc::new(SFSInode(Some(inode_inner)))
         };
