@@ -137,7 +137,7 @@ dependencies = [
  "block-device",
  "cfg-if 1.0.0",
  "errno",
- "libc",
+ "lazy_static",
  "log",
  "page-cache",
  "sgx_libc",
