@@ -2,9 +2,13 @@ use crate::prelude::*;
 
 use crate::dentry::Dentry;
 use async_io::event::{Events, Observer, Poller};
-use async_io::file::{AccessMode, CreationFlags, StatusFlags};
+use async_io::file::{
+    AccessMode, CreationFlags, FileRange, RangeLock, RangeLockBuilder, RangeLockList,
+    RangeLockType, StatusFlags, OFFSET_MAX,
+};
 use async_io::fs::{FileType, SeekFrom};
 use async_io::ioctl::IoctlCmd;
+use libc::pid_t;
 
 /// The opened async inode through sys_open()
 pub struct AsyncFileHandle {
@@ -132,6 +136,11 @@ impl AsyncFileHandle {
         Ok(new_offset)
     }
 
+    pub async fn current_offset(&self) -> usize {
+        let offset = self.offset.lock().await;
+        *offset
+    }
+
     pub fn poll(&self, mask: Events, _poller: Option<&mut Poller>) -> Events {
         let events = match self.access_mode {
             AccessMode::O_RDONLY => Events::IN,
@@ -173,6 +182,76 @@ impl AsyncFileHandle {
 
     pub fn ioctl(&self, cmd: &mut dyn IoctlCmd) -> Result<()> {
         self.dentry.inode().ioctl(cmd)
+    }
+
+    pub fn test_range_lock(&self, lock: &mut RangeLock) -> Result<()> {
+        let ext = self.dentry().inode().ext().unwrap();
+        match ext.get::<RangeLockList>() {
+            None => {
+                // The advisory lock could be placed if there is no list
+                lock.set_type(RangeLockType::F_UNLCK);
+            }
+            Some(range_lock_list) => {
+                range_lock_list.test_lock(lock);
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn set_range_lock(&self, lock: &RangeLock, is_nonblocking: bool) -> Result<()> {
+        if RangeLockType::F_UNLCK == lock.type_() {
+            return Ok(self.unlock_range_lock(lock));
+        }
+
+        self.check_range_lock_with_access_mode(lock)?;
+        let ext = self.dentry().inode().ext().unwrap();
+        let range_lock_list = match ext.get::<RangeLockList>() {
+            Some(list) => list,
+            None => ext.get_or_put_default::<RangeLockList>(),
+        };
+
+        range_lock_list.set_lock(lock, is_nonblocking).await?;
+        Ok(())
+    }
+
+    pub fn release_range_locks(&self, owner: pid_t) {
+        let range_lock = RangeLockBuilder::new()
+            .owner(owner)
+            .type_(RangeLockType::F_UNLCK)
+            .range(FileRange::new(0, OFFSET_MAX).unwrap())
+            .build()
+            .unwrap();
+
+        self.unlock_range_lock(&range_lock)
+    }
+
+    fn unlock_range_lock(&self, lock: &RangeLock) {
+        let ext = self.dentry().inode().ext().unwrap();
+        let range_lock_list = match ext.get::<RangeLockList>() {
+            Some(list) => list,
+            None => {
+                return;
+            }
+        };
+
+        range_lock_list.unlock(lock)
+    }
+
+    fn check_range_lock_with_access_mode(&self, lock: &RangeLock) -> Result<()> {
+        match lock.type_() {
+            RangeLockType::F_RDLCK => {
+                if !self.access_mode.readable() {
+                    return_errno!(EBADF, "File not readable");
+                }
+            }
+            RangeLockType::F_WRLCK => {
+                if !self.access_mode.writable() {
+                    return_errno!(EBADF, "File not writable");
+                }
+            }
+            _ => (),
+        }
+        Ok(())
     }
 
     pub fn dentry(&self) -> &Dentry {
