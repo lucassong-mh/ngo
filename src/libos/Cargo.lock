@@ -139,6 +139,7 @@ dependencies = [
  "errno",
  "lazy_static",
  "log",
+ "lru",
  "page-cache",
  "sgx_libc",
  "sgx_trts",
@@ -651,9 +652,9 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.73"
+version = "0.2.126"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd7d4bd64732af4bf3a67f367c27df8520ad7e230c5817b8ff485864d80242b9"
+checksum = "349d5a591cd28b49e1d1037471617a32ddcda5731b99419008085f72d5a53836"
 
 [[package]]
 name = "lock_api"
@@ -671,6 +672,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4fabed175da42fed1fa0746b0ea71f412aa9d35e76e95e59b192c64b9dc2bf8b"
 dependencies = [
  "cfg-if 0.1.10",
+]
+
+[[package]]
+name = "lru"
+version = "0.7.5"
+dependencies = [
+ "sgx_tstd",
 ]
 
 [[package]]

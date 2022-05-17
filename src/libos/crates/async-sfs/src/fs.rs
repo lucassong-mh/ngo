@@ -7,15 +7,14 @@ use block_device::{BlockDevice, BlockDeviceExt};
 use page_cache::{impl_page_alloc, CachedDisk};
 
 use bitvec::prelude::*;
+use lru::LruCache;
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
 use std::mem::MaybeUninit;
 use std::{
-    collections::BTreeMap,
     string::String,
     sync::{Arc, Weak},
     vec,
-    vec::Vec,
 };
 
 /// Inode for AsyncSimpleFS
@@ -781,7 +780,7 @@ impl AsyncSimpleFS {
         Ok(Self(Some(FsInner {
             super_block: AsyncRwLock::new(Dirty::new(super_block)),
             free_map: AsyncRwLock::new(Dirty::new(BitVec::from(freemap_disk.as_slice()))),
-            inodes: AsyncRwLock::new(BTreeMap::new()),
+            inodes: AsyncRwLock::new(LruCache::new(INODE_CACHE_SIZE)),
             #[cfg(feature = "pagecache")]
             storage: SFSStorage::from_page_cache(CachedDisk::<SFSPageAlloc>::new(device).unwrap()),
             #[cfg(not(feature = "pagecache"))]
@@ -817,7 +816,7 @@ impl AsyncSimpleFS {
         let sfs = Self(Some(FsInner {
             super_block: AsyncRwLock::new(Dirty::new_dirty(super_block)),
             free_map: AsyncRwLock::new(Dirty::new_dirty(free_map)),
-            inodes: AsyncRwLock::new(BTreeMap::new()),
+            inodes: AsyncRwLock::new(LruCache::new(INODE_CACHE_SIZE)),
             #[cfg(feature = "pagecache")]
             storage: SFSStorage::from_page_cache(CachedDisk::<SFSPageAlloc>::new(device).unwrap()),
             #[cfg(not(feature = "pagecache"))]
@@ -907,10 +906,8 @@ pub(crate) struct FsInner {
     super_block: AsyncRwLock<Dirty<SuperBlock>>,
     /// described the usage of blocks, the blocks in use are marked 0
     free_map: AsyncRwLock<Dirty<BitVec<Lsb0, u8>>>,
-    // TODO: Use LruCache to evict the least recently used inodes, and sync the metadata if dirty.
-    // e.g., LruCache<InodeId, Arc<SFSInode>>
     /// cached inodes
-    inodes: AsyncRwLock<BTreeMap<InodeId, Arc<SFSInode>>>,
+    inodes: AsyncRwLock<LruCache<InodeId, Arc<SFSInode>>>,
     /// underlying storage
     storage: SFSStorage,
     /// pointer to self, used by inodes
@@ -963,7 +960,9 @@ impl FsInner {
             };
             Arc::new(SFSInode(Some(inode_inner)))
         };
-        self.inodes.write().await.insert(id, inode.clone());
+        if let Some((_, lru_inode)) = self.inodes.write().await.push(id, inode.clone()) {
+            lru_inode.sync_all().await.unwrap();
+        }
         inode
     }
 
@@ -973,7 +972,7 @@ impl FsInner {
         assert!(!self.free_map.read().await[id]);
 
         // In the cache
-        if let Some(inode) = self.inodes.read().await.get(&id) {
+        if let Some(inode) = self.inodes.write().await.get(&id) {
             return inode.clone();
         }
         // Load if not in cache
@@ -1035,10 +1034,11 @@ impl FsInner {
 
     async fn sync_all(&self) -> Result<()> {
         let mut inodes_map = self.inodes.write().await;
-        for inode in inodes_map.values() {
+        let cnt = inodes_map.len();
+        for _ in 0..cnt {
+            let (_, inode) = inodes_map.pop_lru().unwrap();
             inode.sync_all().await?;
         }
-        inodes_map.clear();
         // writeback freemap and superblock
         self.sync_metadata().await?;
         // flush to device
@@ -1047,8 +1047,8 @@ impl FsInner {
     }
 }
 
-/// Define a page allocator `SFSPageAlloc: PageAlloc`
-/// with total bytes to let fs use page cache.
+// Define a page allocator `SFSPageAlloc: PageAlloc`
+// with total bytes to let fs use page cache.
 impl_page_alloc! { SFSPageAlloc, 1024 * 1024 * 512 }
 
 enum SFSStorage {

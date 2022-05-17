@@ -35,3 +35,6 @@
 [submodule "deps/async_once"]
 	path = deps/async_once
 	url = https://github.com/liqinggd/async_once.git
+[submodule "deps/lru-rs"]
+	path = deps/lru-rs
+	url = https://github.com/liqinggd/lru-rs.git

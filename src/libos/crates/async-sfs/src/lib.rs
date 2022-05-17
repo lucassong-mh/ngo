@@ -11,6 +11,8 @@ extern crate sgx_libc as libc;
 #[macro_use]
 extern crate log;
 
+extern crate lru;
+
 // Export SimpleFileSystem
 pub use fs::AsyncSimpleFS;
 
