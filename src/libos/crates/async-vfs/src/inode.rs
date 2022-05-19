@@ -92,7 +92,7 @@ pub trait AsyncInode: Any + Sync + Send {
     }
 
     /// Get the file system of the INode
-    fn fs(&self) -> Arc<dyn AsyncFileSystem> {
+    async fn fs(&self) -> Arc<dyn AsyncFileSystem> {
         unimplemented!();
     }
 
@@ -133,7 +133,7 @@ pub trait AsyncInode: Any + Sync + Send {
             }
             // handle absolute path
             if let Some('/') = rest_path.chars().next() {
-                result = self.fs().root_inode().await;
+                result = self.fs().await.root_inode().await;
                 rest_path = String::from(rest_path[1..].trim_start_matches('/'));
                 continue;
             }

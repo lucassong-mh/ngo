@@ -30,8 +30,8 @@ fn create_new_sfs() -> Result<()> {
     async_rt::task::block_on(async move {
         let sfs = _create_new_sfs().await;
         let root = sfs.root_inode().await;
-        println!("fs info: {:?}", root.fs().info().await);
-        assert_eq!(root.fs().info().await.magic, SFS_MAGIC as usize);
+        println!("fs info: {:?}", root.fs().await.info().await);
+        assert_eq!(root.fs().await.info().await.magic, SFS_MAGIC as usize);
         sfs.sync().await?;
         Ok(())
     })

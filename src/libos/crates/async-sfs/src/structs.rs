@@ -1,6 +1,7 @@
 //! On-disk structures in SFS
 use crate::prelude::*;
 
+use bitvec::prelude::*;
 use static_assertions::const_assert;
 use std::fmt::{Debug, Formatter};
 use std::mem::{size_of, size_of_val};
@@ -21,6 +22,9 @@ pub struct SuperBlock {
     /// number of freemap blocks
     pub freemap_blocks: u32,
 }
+
+/// Described the usage of blocks
+pub type FreeMap = BitVec<Lsb0, u8>;
 
 /// inode (on disk)
 #[repr(C)]
@@ -176,6 +180,21 @@ impl DiskInode {
     }
 }
 
+pub trait BitsetAlloc {
+    fn alloc(&mut self) -> Option<usize>;
+}
+
+impl BitsetAlloc for FreeMap {
+    fn alloc(&mut self) -> Option<usize> {
+        // TODO: more efficient
+        let id = (0..self.len()).find(|&i| self[i]);
+        if let Some(id) = id {
+            self.set(id, false);
+        }
+        id
+    }
+}
+
 /// Convert structs to [u8] slice
 pub trait AsBuf {
     fn as_buf(&self) -> &[u8] {
@@ -195,6 +214,15 @@ impl AsBuf for DiskEntry {}
 impl AsBuf for u32 {}
 
 impl AsBuf for [u8; BLOCK_SIZE] {}
+
+impl AsBuf for FreeMap {
+    fn as_buf(&self) -> &[u8] {
+        self.as_ref()
+    }
+    fn as_buf_mut(&mut self) -> &mut [u8] {
+        self.as_mut()
+    }
+}
 
 pub type InodeId = BlockId;
 

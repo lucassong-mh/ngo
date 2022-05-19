@@ -18,6 +18,7 @@ pub use fs::AsyncSimpleFS;
 
 mod fs;
 mod prelude;
+mod storage;
 mod structs;
 mod utils;
 

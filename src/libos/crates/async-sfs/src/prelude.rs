@@ -3,7 +3,7 @@ pub(crate) use async_io::fs::{
     Extension, FileType as VfsFileType, FsInfo, Metadata, Timespec, PATH_MAX,
 };
 pub(crate) use async_io::ioctl::IoctlCmd;
-pub(crate) use async_rt::sync::RwLock as AsyncRwLock;
+pub(crate) use async_rt::sync::{RwLock as AsyncRwLock, RwLockWriteGuard as AsyncRwLockWriteGuard};
 pub(crate) use block_device::{BlockId, BLOCK_SIZE};
 pub(crate) use errno::prelude::*;
 #[cfg(feature = "sgx")]

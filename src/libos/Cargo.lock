@@ -145,7 +145,6 @@ dependencies = [
  "sgx_trts",
  "sgx_tstd",
  "sgx_types",
- "spin 0.7.0",
  "static_assertions 0.3.4",
 ]
 
