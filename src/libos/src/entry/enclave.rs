@@ -263,7 +263,7 @@ pub extern "C" fn occlum_ecall_shutdown_vcpus() -> i32 {
     table::wait_all_process_exit();
 
     // Flush the async fs
-    async_rt::task::spawn(unsafe {
+    async_rt::task::block_on(unsafe {
         super::thread::mark_send::mark_send(async {
             use async_vfs::AsyncFileSystem;
             crate::fs::ASYNC_SFS.get().await.sync().await.unwrap();
