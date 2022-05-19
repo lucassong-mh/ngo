@@ -1104,13 +1104,19 @@ impl FsInner {
         Ok(())
     }
 
-    async fn sync_all(&self) -> Result<()> {
+    async fn sync_cached_inodes(&self) -> Result<()> {
         let mut inodes_map = self.inodes.write().await;
         let cnt = inodes_map.len();
         for _ in 0..cnt {
             let (_, inode) = inodes_map.pop_lru().unwrap();
             inode.sync_all().await?;
         }
+        Ok(())
+    }
+
+    async fn sync_all(&self) -> Result<()> {
+        // writeback cached inodes
+        self.sync_cached_inodes().await?;
         // writeback freemap and superblock
         self.sync_metadata().await?;
         // flush to device
