@@ -997,8 +997,9 @@ impl FsInner {
                 free_map.set(block_id, true);
                 return None;
             }
-            super_block.unused_blocks -= 1; // will not underflow
-            trace!("alloc block {:#x}", block_id);
+            // will not underflow
+            super_block.unused_blocks -= 1;
+            //trace!("alloc block {:#x}", block_id);
         } else {
             let super_block = self.super_block.read().await;
             panic!("failed to allocate block: {:?}", *super_block)
@@ -1013,7 +1014,7 @@ impl FsInner {
         assert!(!free_map[block_id]);
         free_map.set(block_id, true);
         super_block.unused_blocks += 1;
-        trace!("free block {:#x}", block_id);
+        //trace!("free block {:#x}", block_id);
         // clean the block after free
         static ZEROS: [u8; BLOCK_SIZE] = [0; BLOCK_SIZE];
         self.storage.write_at(block_id, &ZEROS, 0).await?;
