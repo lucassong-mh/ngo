@@ -46,9 +46,10 @@ impl FixedSizePageAlloc {
         unsafe { dealloc(ptr, layout) }
     }
 
+    // Return true if 90 percent capacity has been consumed
     pub fn is_memory_low(&self) -> bool {
-        const ALLOC_LIMIT: usize = 0x10_0000;
-        if self.remain_bytes.load(Ordering::Relaxed) < ALLOC_LIMIT {
+        let alloc_limit: usize = self.total_bytes / 10;
+        if self.remain_bytes.load(Ordering::Relaxed) < alloc_limit {
             trace!("[PageAlloc] memory low, {:#?}", self);
             return true;
         }

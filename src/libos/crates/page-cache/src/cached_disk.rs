@@ -319,7 +319,7 @@ impl<A: PageAlloc> Inner<A> {
         let mut total_pages = 0;
         let sem = self.arw_lock.write().await;
 
-        const FLUSH_BATCH_SIZE: usize = 128;
+        const FLUSH_BATCH_SIZE: usize = 1024;
         loop {
             let mut flush_pages = Vec::with_capacity(FLUSH_BATCH_SIZE);
             let num_pages = self.cache.flush_dirty(&mut flush_pages);
@@ -431,7 +431,7 @@ impl<A: PageAlloc> CachedDiskFlusher<A> {
 impl<A: PageAlloc> PageCacheFlusher for CachedDiskFlusher<A> {
     async fn flush(&self) -> Result<usize> {
         if let Some(this) = self.this_opt() {
-            this.flush().await?;
+            return this.flush().await;
         }
         Ok(0)
     }

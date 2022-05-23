@@ -110,7 +110,7 @@ impl<K: PageKey, A: PageAlloc> EvictorTaskInner<K, A> {
     async fn task_main(&self) {
         let mut waiter = Waiter::new();
         self.wq.enqueue(&mut waiter);
-        const AUTO_EVICT_PERIOD: Duration = Duration::from_secs(1);
+        const AUTO_EVICT_PERIOD: Duration = Duration::from_millis(10);
         while !self.is_dropped() {
             waiter.reset();
 
@@ -134,7 +134,7 @@ impl<K: PageKey, A: PageAlloc> EvictorTaskInner<K, A> {
         .await;
 
         // Evict pages to free memory
-        const BATCH_SIZE: usize = 2048;
+        const BATCH_SIZE: usize = 25_000;
         while A::is_memory_low() {
             let mut total_evicted = 0;
             self.for_each_page_cache(|page_cache| {

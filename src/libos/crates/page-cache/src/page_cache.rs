@@ -40,6 +40,7 @@ pub trait PageCacheFlusher: Send + Sync {
 impl<K: PageKey, A: PageAlloc> PageCache<K, A> {
     /// Create a page cache.
     pub fn new(flusher: Arc<dyn PageCacheFlusher>) -> Self {
+        info!("[PageCache] new");
         let new_self = Self(Arc::new(PageCacheInner::new(flusher)));
         PageEvictor::<K, A>::register(&new_self);
         new_self
@@ -89,9 +90,9 @@ impl<K: PageKey, A: PageAlloc> PageCache<K, A> {
     /// into the `Vec`.
     pub fn flush_dirty(&self, dirty: &mut Vec<PageHandle<K, A>>) -> usize {
         // The dirty_set traces dirty pages
+        let mut cache = self.0.cache.lock();
         let mut dirty_set = self.0.dirty_set.lock();
         let set_copy = dirty_set.clone();
-        let mut cache = self.0.cache.lock();
         let mut flush_num = 0;
         for key in set_copy.iter() {
             if dirty.len() >= dirty.capacity() {
