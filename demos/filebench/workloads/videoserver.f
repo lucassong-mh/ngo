@@ -33,12 +33,12 @@
 # 1 second. Thus the write bandwidth will be set as $filesize/$repintval.
 #
 
-set $dir=/tmp
+set $dir=/async_sfs
 set $eventrate=96
 set $filesize=1g
 set $nthreads=47
 set $numactivevids=1
-set $numpassivevids=4
+set $numpassivevids=1
 set $reuseit=false
 set $readiosize=256k
 set $writeiosize=1m
@@ -54,10 +54,7 @@ define process name=vidwriter,instances=1
 {
   thread name=vidwriter,memsize=10m,instances=1
   {
-    flowop deletefile name=vidremover,filesetname=$passvidsname
-    flowop createfile name=wrtopen,filesetname=$passvidsname,fd=1
-    flowop writewholefile name=newvid,iosize=$writeiosize,fd=1,srcfd=1
-    flowop closefile name=wrtclose, fd=1
+    flowop writewholefile name=newvid,iosize=$writeiosize,filesetname=$passvidsname
     flowop delay name=replaceinterval, value=$repintval
   }
 }
@@ -73,4 +70,4 @@ define process name=vidreaders,instances=1
 
 echo  "Video Server Version 3.0 personality successfully loaded"
 
-run 180
+run 60

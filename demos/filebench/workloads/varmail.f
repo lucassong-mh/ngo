@@ -23,7 +23,7 @@
 # Use is subject to license terms.
 #
 
-set $dir=/tmp
+set $dir=/async_sfs
 set $nfiles=8000
 set $meandirwidth=1000
 set $filesize=16k
@@ -37,19 +37,11 @@ define process name=filereader,instances=1
 {
   thread name=filereaderthread,memsize=10m,instances=$nthreads
   {
-    flowop deletefile name=deletefile1,filesetname=bigfileset
-    flowop createfile name=createfile2,filesetname=bigfileset,fd=1
-    flowop appendfilerand name=appendfilerand2,iosize=$meanappendsize,fd=1
-    flowop fsync name=fsyncfile2,fd=1
-    flowop closefile name=closefile2,fd=1
-    flowop openfile name=openfile3,filesetname=bigfileset,fd=1
-    flowop readwholefile name=readfile3,fd=1,iosize=$iosize
-    flowop appendfilerand name=appendfilerand3,iosize=$meanappendsize,fd=1
-    flowop fsync name=fsyncfile3,fd=1
-    flowop closefile name=closefile3,fd=1
-    flowop openfile name=openfile4,filesetname=bigfileset,fd=1
-    flowop readwholefile name=readfile4,fd=1,iosize=$iosize
-    flowop closefile name=closefile4,fd=1
+    flowop appendfilerand name=appendfilerand2,iosize=$meanappendsize,filesetname=bigfileset
+    flowop readwholefile name=readfile3,iosize=$iosize,filesetname=bigfileset
+    flowop appendfilerand name=appendfilerand3,iosize=$meanappendsize,filesetname=bigfileset
+    flowop readwholefile name=readfile4,iosize=$iosize,filesetname=bigfileset
+    flowop fsync name=fsyncfile2
   }
 }
 

@@ -27,13 +27,13 @@
 # since aio write/wait and semaphore-related flowops are not supported.
 # We replace some flowops to achieve similar performance quota.
 
-set $dir=/tmp
+set $dir=/async_sfs
 set $eventrate=0
 set $iosize=2k
 set $nshadows=10
 set $ndbwriters=100
 set $usermode=200000
-set $filesize=800m
+set $filesize=80m
 set $memperthread=1m
 set $workingset=0
 set $logfilesize=10m
@@ -43,8 +43,8 @@ set $directio=0
 eventgen rate = $eventrate
 
 # Define a datafile and logfile
-define fileset name=datafiles,path=$dir,size=$filesize,entries=$nfiles,dirwidth=1024,prealloc=100,reuse
-define fileset name=logfile,path=$dir,size=$logfilesize,entries=$nlogfiles,dirwidth=1024,prealloc=100,reuse
+define fileset name=datafiles,path=$dir,size=$filesize,entries=$nfiles,dirwidth=10,prealloc=100,reuse
+define fileset name=logfile,path=$dir,size=$logfilesize,entries=$nlogfiles,dirwidth=10,prealloc=100,reuse
 
 define process name=lgwr,instances=1
 {
@@ -61,7 +61,7 @@ define process name=dbwr,instances=$ndbwriters
   thread name=dbwr,memsize=$memperthread
   {
     flowop write name=dbwrite-a,filesetname=datafiles,
-        iosize=$iosize,workingset=$workingset,random,iters=100,opennext,directio=$directio,dsync
+        iosize=$iosize,workingset=$workingset,random,directio=$directio,dsync
   }
 }
 
@@ -78,4 +78,4 @@ define process name=shadow,instances=$nshadows
 
 echo "OLTP Version 3.0  personality successfully loaded"
 
-run 180
+run 60
