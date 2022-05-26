@@ -104,7 +104,9 @@ impl AsyncInode for SFSInode {
     }
 
     async fn sync_all(&self) -> Result<()> {
-        self.inner.write().await.sync_metadata().await?;
+        if self.inner.read().await.dirty() {
+            self.inner.write().await.sync_metadata().await?;
+        }
         Ok(())
     }
 
@@ -808,6 +810,10 @@ impl InodeInner {
         self.disk_inode.nlinks -= 1;
     }
 
+    fn dirty(&self) -> bool {
+        self.disk_inode.dirty()
+    }
+
     async fn sync_metadata(&mut self) -> Result<()> {
         if self.disk_inode.nlinks == 0 {
             self._resize(0).await?;
@@ -815,14 +821,12 @@ impl InodeInner {
             self.fs().inner().free_block(self.id).await?;
             return Ok(());
         }
-        if self.disk_inode.dirty() {
-            self.fs()
-                .inner()
-                .storage
-                .store_struct::<DiskInode>(self.id, 0, &self.disk_inode)
-                .await?;
-            self.disk_inode.sync();
-        }
+        self.fs()
+            .inner()
+            .storage
+            .store_struct::<DiskInode>(self.id, 0, &self.disk_inode)
+            .await?;
+        self.disk_inode.sync();
         Ok(())
     }
 }
