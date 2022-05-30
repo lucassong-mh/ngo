@@ -37,7 +37,7 @@ pub struct DiskInode {
     pub type_: FileType,
     /// number of hard links to this file
     /// Note: "." and ".." is counted in this nlinks
-    pub nlinks: u16,
+    pub nlinks: u32,
     /// number of blocks
     pub blocks: u32,
     /// direct blocks
@@ -61,10 +61,12 @@ pub struct DiskEntry {
     pub id: u32,
     /// file name
     pub name: Str256,
+    /// file type
+    pub type_: FileType,
 }
 
 /// file type
-#[repr(u16)]
+#[repr(u32)]
 #[derive(Debug, Eq, PartialEq, Copy, Clone)]
 pub enum FileType {
     Invalid = 0,
@@ -250,11 +252,11 @@ pub const BLKN_FREEMAP: BlockId = 2;
 /// number of bits in a block
 pub const BLKBITS: usize = BLOCK_SIZE * 8;
 /// size of one entry
-pub const ENTRY_SIZE: usize = 4;
+pub const ENTRY_SIZE: usize = size_of::<u32>();
 /// number of entries in a block
 pub const BLK_NENTRY: usize = BLOCK_SIZE / ENTRY_SIZE;
 /// size of a dirent used in the size field
-pub const DIRENT_SIZE: usize = MAX_FNAME_LEN + 1 + ENTRY_SIZE;
+pub const DIRENT_SIZE: usize = size_of::<DiskEntry>();
 /// max number of blocks with direct blocks
 pub const MAX_NBLOCK_DIRECT: usize = NDIRECT;
 /// max number of blocks with indirect blocks

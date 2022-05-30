@@ -168,6 +168,7 @@ impl AsyncInode for SFSInode {
             .append_direntry(&DiskEntry {
                 id: inode_inner_mut.id as u32,
                 name: Str256::from(name),
+                type_: inode_inner_mut.disk_inode.type_,
             })
             .await?;
         inode_inner_mut.nlinks_inc();
@@ -211,6 +212,7 @@ impl AsyncInode for SFSInode {
             .append_direntry(&DiskEntry {
                 id: other_inner_mut.id as u32,
                 name: Str256::from(name),
+                type_: other_inner_mut.disk_inode.type_,
             })
             .await?;
         other_inner_mut.nlinks_inc();
@@ -229,7 +231,7 @@ impl AsyncInode for SFSInode {
             return_errno!(EISDIR, "name is dir");
         }
 
-        let (inode_id, entry_id) = self
+        let (inode_id, type_, entry_id) = self
             .inner
             .read()
             .await
@@ -244,9 +246,7 @@ impl AsyncInode for SFSInode {
             .inner()
             .get_inode(inode_id)
             .await;
-
-        let type_ = inode.metadata().await?.type_;
-        if type_ == VfsFileType::Dir {
+        if type_ == FileType::Dir {
             // only . and ..
             if inode.metadata().await?.size / DIRENT_SIZE > 2 {
                 return_errno!(ENOTEMPTY, "dir not empty");
@@ -254,7 +254,7 @@ impl AsyncInode for SFSInode {
         }
         let (mut self_inner_mut, mut other_inner_mut) = write_lock_two_inodes(self, &inode).await;
         other_inner_mut.nlinks_dec();
-        if type_ == VfsFileType::Dir {
+        if type_ == FileType::Dir {
             other_inner_mut.nlinks_dec(); //for .
             self_inner_mut.nlinks_dec(); //for ..
         }
@@ -304,7 +304,7 @@ impl AsyncInode for SFSInode {
             return_errno!(EEXIST, "dest entry exist");
         }
 
-        let (inode_id, entry_id) = self
+        let (inode_id, inode_type, entry_id) = self
             .inner
             .read()
             .await
@@ -321,6 +321,7 @@ impl AsyncInode for SFSInode {
                     &DiskEntry {
                         id: inode_id as u32,
                         name: Str256::from(new_name),
+                        type_: inode_type,
                     },
                 )
                 .await?;
@@ -331,6 +332,7 @@ impl AsyncInode for SFSInode {
                 .append_direntry(&DiskEntry {
                     id: inode_id as u32,
                     name: Str256::from(new_name),
+                    type_: inode_type,
                 })
                 .await?;
             self_inner_mut.remove_direntry(entry_id).await?;
@@ -388,6 +390,34 @@ impl AsyncInode for SFSInode {
         };
         let entry = self.inner.read().await.read_direntry(id).await?;
         Ok(String::from(entry.name.as_ref()))
+    }
+
+    async fn iterate_entries(&self, ctx: &mut DirentWriterContext) -> Result<usize> {
+        if self.metadata().await?.type_ != VfsFileType::Dir {
+            return_errno!(ENOTDIR, "not dir");
+        }
+
+        let mut total_written_len = 0;
+        let inner = self.inner.read().await;
+        for entry_id in ctx.pos()..inner.disk_inode.size as usize / DIRENT_SIZE {
+            let entry = inner.read_direntry(entry_id).await?;
+            let written_len = match ctx.write_entry(
+                entry.name.as_ref(),
+                entry.id as u64,
+                VfsFileType::from(entry.type_),
+            ) {
+                Ok(written_len) => written_len,
+                Err(_) => {
+                    if total_written_len == 0 {
+                        return_errno!(EINVAL, "write entry fail");
+                    } else {
+                        break;
+                    }
+                }
+            };
+            total_written_len += written_len;
+        }
+        Ok(total_written_len)
     }
 
     fn ioctl(&self, _cmd: &mut dyn IoctlCmd) -> Result<()> {
@@ -560,11 +590,11 @@ impl InodeInner {
     }
 
     /// Only for Dir
-    async fn get_file_inode_and_entry_id(&self, name: &str) -> Option<(InodeId, usize)> {
+    async fn get_file_inode_and_entry_id(&self, name: &str) -> Option<(InodeId, FileType, usize)> {
         for i in 0..self.disk_inode.size as usize / DIRENT_SIZE {
             let entry = self.read_direntry(i).await.unwrap();
             if entry.name.as_ref() == name {
-                return Some((entry.id as InodeId, i));
+                return Some((entry.id as InodeId, entry.type_, i));
             }
         }
         None
@@ -573,7 +603,7 @@ impl InodeInner {
     async fn get_file_inode_id(&self, name: &str) -> Option<InodeId> {
         self.get_file_inode_and_entry_id(name)
             .await
-            .map(|(inode_id, _)| inode_id)
+            .map(|(inode_id, _, _)| inode_id)
     }
 
     /// Init dir content. Insert 2 init entries.
@@ -586,6 +616,7 @@ impl InodeInner {
             &DiskEntry {
                 id: self.id as u32,
                 name: Str256::from("."),
+                type_: FileType::Dir,
             },
         )
         .await?;
@@ -594,6 +625,7 @@ impl InodeInner {
             &DiskEntry {
                 id: parent as u32,
                 name: Str256::from(".."),
+                type_: FileType::Dir,
             },
         )
         .await?;

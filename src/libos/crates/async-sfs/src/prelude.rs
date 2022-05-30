@@ -1,6 +1,6 @@
 // Convenient reexports for internal uses.
 pub(crate) use async_io::fs::{
-    Extension, FileType as VfsFileType, FsInfo, Metadata, Timespec, PATH_MAX,
+    DirentWriterContext, Extension, FileType as VfsFileType, FsInfo, Metadata, Timespec, PATH_MAX,
 };
 pub(crate) use async_io::ioctl::IoctlCmd;
 pub(crate) use async_rt::sync::{RwLock as AsyncRwLock, RwLockWriteGuard as AsyncRwLockWriteGuard};

@@ -6,7 +6,7 @@ use async_io::file::{
     AccessMode, CreationFlags, FileRange, RangeLock, RangeLockBuilder, RangeLockList,
     RangeLockType, StatusFlags, OFFSET_MAX,
 };
-use async_io::fs::{FileType, SeekFrom};
+use async_io::fs::{DirentWriter, DirentWriterContext, FileType, SeekFrom};
 use async_io::ioctl::IoctlCmd;
 use libc::pid_t;
 
@@ -182,6 +182,17 @@ impl AsyncFileHandle {
 
     pub fn ioctl(&self, cmd: &mut dyn IoctlCmd) -> Result<()> {
         self.dentry.inode().ioctl(cmd)
+    }
+
+    pub async fn iterate_entries(&self, writer: &mut dyn DirentWriter) -> Result<usize> {
+        if !self.access_mode.readable() {
+            return_errno!(EBADF, "File not readable. Can't read entry.");
+        }
+        let mut offset = self.offset.lock().await;
+        let mut dir_ctx = DirentWriterContext::new(*offset, writer);
+        let written_size = self.dentry.inode().iterate_entries(&mut dir_ctx).await?;
+        *offset = dir_ctx.pos();
+        Ok(written_size)
     }
 
     pub fn test_range_lock(&self, lock: &mut RangeLock) -> Result<()> {

@@ -1,6 +1,6 @@
 use crate::prelude::*;
 
-use async_io::fs::{Extension, FileType, FsInfo, Metadata, PATH_MAX};
+use async_io::fs::{DirentWriterContext, Extension, FileType, FsInfo, Metadata, PATH_MAX};
 use async_io::ioctl::IoctlCmd;
 use async_trait::async_trait;
 use std::any::Any;
@@ -83,6 +83,11 @@ pub trait AsyncInode: Any + Sync + Send {
 
     /// Get the name of directory entry
     async fn get_entry(&self, _id: usize) -> Result<String> {
+        return_errno!(ENOSYS, "not support");
+    }
+
+    /// Iterate directory entries
+    async fn iterate_entries(&self, _ctx: &mut DirentWriterContext) -> Result<usize> {
         return_errno!(ENOSYS, "not support");
     }
 
