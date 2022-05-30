@@ -293,16 +293,6 @@ impl AsyncInode for SFSInode {
         if dest_info.nlinks == 0 {
             return_errno!(ENOENT, "dest dir removed");
         }
-        if dest
-            .inner
-            .read()
-            .await
-            .get_file_inode_id(new_name)
-            .await
-            .is_some()
-        {
-            return_errno!(EEXIST, "dest entry exist");
-        }
 
         let (inode_id, inode_type, entry_id) = self
             .inner
@@ -311,6 +301,30 @@ impl AsyncInode for SFSInode {
             .get_file_inode_and_entry_id(old_name)
             .await
             .ok_or(errno!(ENOENT, "not found"))?;
+        if let Ok(dest_inode) = dest.find(new_name).await {
+            let info = dest_inode.metadata().await?;
+            if inode_id == info.inode {
+                return Ok(());
+            }
+            let old_type = VfsFileType::from(inode_type);
+            let dest_type = info.type_;
+            match (old_type, dest_type) {
+                (VfsFileType::Dir, VfsFileType::Dir) => {
+                    if info.size / DIRENT_SIZE != 2 {
+                        return_errno!(ENOTEMPTY, "dir not empty");
+                    }
+                }
+                (VfsFileType::Dir, _) => {
+                    return_errno!(ENOTDIR, "not dir");
+                }
+                (_, VfsFileType::Dir) => {
+                    return_errno!(EISDIR, "entry is dir");
+                }
+                _ => {}
+            }
+            dest.unlink(new_name).await?;
+        }
+
         if info.inode == dest_info.inode {
             // rename: in place modify name
             self.inner
