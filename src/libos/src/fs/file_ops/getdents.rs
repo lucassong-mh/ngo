@@ -1,15 +1,15 @@
 use super::*;
 use core::marker::PhantomData;
 
-pub fn do_getdents64(fd: FileDesc, buf: &mut [u8]) -> Result<usize> {
-    getdents_common::<LinuxDirent64>(fd, buf)
+pub async fn do_getdents64(fd: FileDesc, buf: &mut [u8]) -> Result<usize> {
+    getdents_common::<LinuxDirent64>(fd, buf).await
 }
 
-pub fn do_getdents(fd: FileDesc, buf: &mut [u8]) -> Result<usize> {
-    getdents_common::<LinuxDirent>(fd, buf)
+pub async fn do_getdents(fd: FileDesc, buf: &mut [u8]) -> Result<usize> {
+    getdents_common::<LinuxDirent>(fd, buf).await
 }
 
-fn getdents_common<T: Dirent>(fd: FileDesc, buf: &mut [u8]) -> Result<usize> {
+async fn getdents_common<T: Dirent>(fd: FileDesc, buf: &mut [u8]) -> Result<usize> {
     debug!(
         "getdents: fd: {}, buf: {:?}, buf_size: {}",
         fd,
@@ -18,14 +18,14 @@ fn getdents_common<T: Dirent>(fd: FileDesc, buf: &mut [u8]) -> Result<usize> {
     );
 
     let file_ref = current!().file(fd)?;
-    let inode_file = file_ref
-        .as_inode_file()
-        .ok_or_else(|| errno!(EBADF, "not an inode"))?;
-    if inode_file.inode().metadata()?.type_ != FileType::Dir {
-        return_errno!(ENOTDIR, "not refer to a directory");
-    }
     let mut writer = DirentBufWriter::<T>::new(buf);
-    let written_size = inode_file.iterate_entries(&mut writer)?;
+    let written_size = if let Some(inode_file) = file_ref.as_inode_file() {
+        inode_file.iterate_entries(&mut writer)?
+    } else if let Some(async_file_handle) = file_ref.as_async_file_handle() {
+        async_file_handle.iterate_entries(&mut writer).await?
+    } else {
+        return_errno!(EBADF, "not an inode");
+    };
     Ok(written_size)
 }
 
@@ -69,7 +69,7 @@ impl<'a, T: Dirent> DirentWriter for DirentBufWriter<'a, T> {
     }
 }
 
-trait Dirent {
+trait Dirent: Sync + Send {
     fn new(name: &str, ino: u64, type_: FileType) -> Self;
     fn rec_len(&self) -> usize;
     fn dump(&self, buf: &mut [u8], name: &str, type_: FileType) -> Result<()>;

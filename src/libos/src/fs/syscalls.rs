@@ -271,7 +271,7 @@ pub async fn do_getdents64(fd: FileDesc, buf: *mut u8, buf_size: usize) -> Resul
         from_user::check_mut_array(buf, buf_size)?;
         unsafe { std::slice::from_raw_parts_mut(buf, buf_size) }
     };
-    let len = file_ops::do_getdents64(fd, safe_buf)?;
+    let len = file_ops::do_getdents64(fd, safe_buf).await?;
     Ok(len as isize)
 }
 
@@ -280,7 +280,7 @@ pub async fn do_getdents(fd: FileDesc, buf: *mut u8, buf_size: usize) -> Result<
         from_user::check_mut_array(buf, buf_size)?;
         unsafe { std::slice::from_raw_parts_mut(buf, buf_size) }
     };
-    let len = file_ops::do_getdents(fd, safe_buf)?;
+    let len = file_ops::do_getdents(fd, safe_buf).await?;
     Ok(len as isize)
 }
 
