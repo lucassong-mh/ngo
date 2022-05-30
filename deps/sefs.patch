@@ -1,0 +1,13 @@
+diff --git a/rcore-fs/src/vfs.rs b/rcore-fs/src/vfs.rs
+index 674b9bb..ba702fc 100644
+--- a/rcore-fs/src/vfs.rs
++++ b/rcore-fs/src/vfs.rs
+@@ -515,7 +515,7 @@ impl<'a> DirentWriterContext<'a> {
+ }
+ 
+ /// DirentWriter is used to write directory entry, the object which implements it can decide how to format the data
+-pub trait DirentWriter {
++pub trait DirentWriter: Sync + Send {
+     fn write_entry(&mut self, name: &str, ino: u64, type_: FileType) -> Result<usize>;
+ }
+ 
