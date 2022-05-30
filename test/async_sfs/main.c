@@ -187,6 +187,43 @@ static int __test_rename(const char *file_path) {
     return 0;
 }
 
+static int __test_readdir(const char *file_path) {
+    struct dirent *dp;
+    DIR *dirp;
+    char base_buf[PATH_MAX] = { 0 };
+    char *base_name;
+    char dir_buf[PATH_MAX] = { 0 };
+    char *dir_name;
+    bool found = false;
+
+    if (fs_split_path(file_path, dir_buf, &dir_name, base_buf, &base_name) < 0) {
+        THROW_ERROR("failed to split path");
+    }
+    dirp = opendir(dir_name);
+    if (dirp == NULL) {
+        THROW_ERROR("failed to open directory: %s", dir_name);
+    }
+    while (1) {
+        errno = 0;
+        dp = readdir(dirp);
+        if (dp == NULL) {
+            if (errno != 0) {
+                THROW_ERROR("faild to call readdir");
+            }
+            break;
+        }
+        if (strncmp(base_name, dp->d_name, strlen(base_name)) == 0) {
+            found = true;
+        }
+    }
+    if (!found) {
+        THROW_ERROR("faild to read file entry");
+    }
+    closedir(dirp);
+    return 0;
+}
+
+
 typedef int(*test_file_func_t)(const char *);
 
 static int test_file_framework(test_file_func_t fn) {
@@ -224,6 +261,10 @@ static int test_rename() {
     return test_file_framework(__test_rename);
 }
 
+static int test_readdir() {
+    return test_file_framework(__test_readdir);
+}
+
 static int test_mkdir_and_rmdir() {
     struct stat stat_buf;
     mode_t mode = 00775;
@@ -259,6 +300,7 @@ static test_case_t test_cases[] = {
     TEST_CASE(test_writev_readv),
     TEST_CASE(test_lseek),
     TEST_CASE(test_rename),
+    TEST_CASE(test_readdir),
     TEST_CASE(test_mkdir_and_rmdir),
 };
 
