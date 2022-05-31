@@ -33,7 +33,7 @@ impl TrustedAddr {
         if let UnixAddr::Pathname(path) = &self.unix_addr {
             let inode_num = {
                 let current = current!();
-                let fs = current.fs().read().unwrap();
+                let fs = current.fs();
                 let file_ref = fs
                     .open_file(
                         &FsPath::try_from(path.as_ref())?,
@@ -59,7 +59,7 @@ impl TrustedAddr {
         if let UnixAddr::Pathname(path) = &self.unix_addr {
             let (dir_inode, sock_name) = {
                 let current = current!();
-                let fs = current.fs().read().unwrap();
+                let fs = current.fs();
                 let path = FsPath::try_from(path.as_ref())?;
                 fs.lookup_dirinode_and_basename(&path).await?
             };

@@ -9,7 +9,7 @@ pub async fn do_openat(fs_path: &FsPath, flags: u32, mode: FileMode) -> Result<F
     );
 
     let current = current!();
-    let fs = current.fs().read().unwrap();
+    let fs = current.fs();
     let masked_mode = mode & !current.process().umask();
 
     let file_ref = if let Some(disk_file) = try_open_disk(&fs, fs_path).await? {

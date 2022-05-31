@@ -15,7 +15,7 @@ pub async fn do_fchownat(fs_path: &FsPath, uid: u32, gid: u32, flags: ChownFlags
 
     let inode = {
         let current = current!();
-        let fs = current.fs().read().unwrap();
+        let fs = current.fs();
         if flags.contains(ChownFlags::AT_SYMLINK_NOFOLLOW) {
             fs.lookup_inode_no_follow(fs_path).await?
         } else {

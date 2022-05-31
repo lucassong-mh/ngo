@@ -23,7 +23,7 @@ pub async fn do_fstatat(fs_path: &FsPath, flags: StatFlags) -> Result<StatBuf> {
     debug!("fstatat: fs_path: {:?}, flags: {:?}", fs_path, flags);
 
     let current = current!();
-    let fs = current.fs().read().unwrap();
+    let fs = current.fs();
 
     let stat = if let Some(disk_file) = try_open_disk(&fs, fs_path).await? {
         StatBuf::from(disk_file.metadata())

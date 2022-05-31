@@ -3,17 +3,29 @@ use super::*;
 
 use super::fspath::FsPathInner;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct FsView {
     root: String,
-    cwd: String,
+    cwd: RwLock<String>,
+}
+
+impl Clone for FsView {
+    fn clone(&self) -> Self {
+        Self {
+            root: self.root.clone(),
+            cwd: RwLock::new(self.cwd()),
+        }
+    }
 }
 
 impl FsView {
     pub fn new() -> FsView {
         let root = String::from("/");
         let cwd = root.clone();
-        Self { root, cwd }
+        Self {
+            root,
+            cwd: RwLock::new(cwd),
+        }
     }
 
     /// Get the root directory
@@ -22,25 +34,26 @@ impl FsView {
     }
 
     /// Get the current working directory.
-    pub fn cwd(&self) -> &str {
-        &self.cwd
+    pub fn cwd(&self) -> String {
+        self.cwd.read().unwrap().clone()
     }
 
     /// Set the current working directory.
-    pub fn set_cwd(&mut self, path: &str) -> Result<()> {
+    pub fn set_cwd(&self, path: &str) -> Result<()> {
         if path.len() == 0 {
             return_errno!(EINVAL, "empty path");
         }
 
+        let mut cwd = self.cwd.write().unwrap();
         if let Some('/') = path.chars().next() {
             // absolute
-            self.cwd = path.to_owned();
+            *cwd = path.to_owned();
         } else {
             // relative
-            if !self.cwd.ends_with("/") {
-                self.cwd += "/";
+            if !cwd.ends_with("/") {
+                *cwd += "/";
             }
-            self.cwd += path;
+            *cwd += path;
         }
         Ok(())
     }
@@ -155,9 +168,9 @@ impl FsView {
             }
             FsPathInner::Cwd => {
                 if follow_symlink {
-                    self.lookup_inode_cwd_sync(self.cwd())?
+                    self.lookup_inode_cwd_sync(&self.cwd())?
                 } else {
-                    self.lookup_inode_cwd_sync_no_follow(self.cwd())?
+                    self.lookup_inode_cwd_sync_no_follow(&self.cwd())?
                 }
             }
             FsPathInner::FdRelative(dirfd, path) => {
@@ -195,12 +208,12 @@ impl FsView {
                 .lookup_follow(abs_path, MAX_SYMLINKS)?
         } else {
             // relative path
-            let cwd = self.cwd().trim_start_matches('/');
+            let cwd = self.cwd();
             ROOT_FS
                 .read()
                 .unwrap()
                 .root_inode()
-                .lookup_follow(cwd, MAX_SYMLINKS)?
+                .lookup_follow(cwd.trim_start_matches('/'), MAX_SYMLINKS)?
                 .lookup_follow(path, MAX_SYMLINKS)?
         };
         Ok(InodeHandle::from_sync(inode))
@@ -237,9 +250,9 @@ impl FsView {
             }
             FsPathInner::Cwd => {
                 if follow_symlink {
-                    self.lookup_inode_cwd(self.cwd()).await?
+                    self.lookup_inode_cwd(&self.cwd()).await?
                 } else {
-                    self.lookup_inode_cwd_no_follow(self.cwd()).await?
+                    self.lookup_inode_cwd_no_follow(&self.cwd()).await?
                 }
             }
             FsPathInner::FdRelative(dirfd, path) => {
@@ -344,7 +357,8 @@ impl FsView {
             Ok(inode)
         } else {
             // relative path
-            let cwd = self.cwd().trim_start_matches('/');
+            let cwd_string = self.cwd();
+            let cwd = cwd_string.trim_start_matches('/');
             let inode = if cwd.starts_with(ASYNC_SFS_NAME) {
                 let cwd = cwd.strip_prefix(ASYNC_SFS_NAME).unwrap();
                 let inode = ASYNC_SFS

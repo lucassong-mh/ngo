@@ -5,7 +5,7 @@ pub async fn do_rmdir(fs_path: &FsPath) -> Result<()> {
 
     let (dir_inode, file_name) = {
         let current = current!();
-        let fs = current.fs().read().unwrap();
+        let fs = current.fs();
         fs.lookup_dirinode_and_basename(fs_path).await?
     };
     let file_inode = dir_inode.find(&file_name).await?;

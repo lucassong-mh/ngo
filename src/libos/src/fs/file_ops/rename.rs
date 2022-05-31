@@ -7,7 +7,7 @@ pub async fn do_renameat(old_fs_path: &FsPath, new_fs_path: &FsPath) -> Result<(
     );
 
     let current = current!();
-    let fs = current.fs().read().unwrap();
+    let fs = current.fs();
 
     let old_path = PathBuf::from(fs.convert_fspath_to_abs(old_fs_path).await?);
     let new_path = PathBuf::from(fs.convert_fspath_to_abs(new_fs_path).await?);

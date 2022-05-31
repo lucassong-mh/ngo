@@ -6,7 +6,7 @@ pub async fn do_readlinkat(fs_path: &FsPath, buf: &mut [u8]) -> Result<usize> {
     let file_path = {
         let inode = {
             let current = current!();
-            let fs = current.fs().read().unwrap();
+            let fs = current.fs();
             fs.lookup_inode_no_follow(fs_path).await?
         };
         if inode.metadata().await?.type_ != FileType::SymLink {
@@ -31,7 +31,7 @@ pub async fn do_symlinkat(target: &str, link_path: &FsPath) -> Result<usize> {
 
     let (dir_inode, link_name) = {
         let current = current!();
-        let fs = current.fs().read().unwrap();
+        let fs = current.fs();
         fs.lookup_dirinode_and_basename(link_path).await?
     };
     if !dir_inode.allow_write() {

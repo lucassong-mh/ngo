@@ -6,14 +6,14 @@ pub async fn do_chdir(path: &str) -> Result<()> {
 
     let current = current!();
     let inode = {
-        let fs = current.fs().read().unwrap();
+        let fs = current.fs();
         fs.lookup_inode(&FsPath::try_from(path)?).await?
     };
     if inode.metadata().await?.type_ != FileType::Dir {
         return_errno!(ENOTDIR, "cwd must be directory");
     }
 
-    current.fs().write().unwrap().set_cwd(path)?;
+    current.fs().set_cwd(path)?;
     Ok(())
 }
 
@@ -35,6 +35,6 @@ pub async fn do_fchdir(fd: FileDesc) -> Result<()> {
     } else {
         return_errno!(EBADF, "not an inode");
     };
-    current.fs().write().unwrap().set_cwd(path)?;
+    current.fs().set_cwd(path)?;
     Ok(())
 }

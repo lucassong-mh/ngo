@@ -5,7 +5,7 @@ pub async fn do_fchmodat(fs_path: &FsPath, mode: FileMode) -> Result<()> {
 
     let inode = {
         let current = current!();
-        let fs = current.fs().read().unwrap();
+        let fs = current.fs();
         fs.lookup_inode(fs_path).await?
     };
     let mut info = inode.metadata().await?;

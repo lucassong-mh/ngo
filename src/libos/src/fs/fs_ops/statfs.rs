@@ -26,7 +26,7 @@ pub async fn do_statfs(path: &FsPath) -> Result<Statfs> {
 
     let inode = {
         let current = current!();
-        let fs = current.fs().read().unwrap();
+        let fs = current.fs();
         fs.lookup_inode(path).await?
     };
     let statfs = {
