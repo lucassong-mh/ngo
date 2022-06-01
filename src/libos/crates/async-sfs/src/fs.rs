@@ -691,6 +691,10 @@ impl InodeInner {
         let old_blocks = self.disk_inode.blocks as usize;
         match blocks.cmp(&old_blocks) {
             Ordering::Equal => {
+                if len < self.disk_inode.size as usize {
+                    self._write_at(len, &ZEROS[..self.disk_inode.size as usize - len])
+                        .await?;
+                }
                 self.disk_inode.size = len as u32;
             }
             Ordering::Greater => {
@@ -781,6 +785,14 @@ impl InodeInner {
                             .await?;
                         self.disk_inode.db_indirect = 0;
                     }
+                }
+                if len > 0 {
+                    let len_offset = if len % BLOCK_SIZE == 0 {
+                        BLOCK_SIZE
+                    } else {
+                        len % BLOCK_SIZE
+                    };
+                    self._write_at(len, &ZEROS[len_offset..]).await?;
                 }
                 self.disk_inode.blocks = blocks as u32;
                 self.disk_inode.size = len as u32;
@@ -1066,7 +1078,6 @@ impl FsInner {
         super_block.unused_blocks += 1;
         //trace!("free block {:#x}", block_id);
         // clean the block after free
-        static ZEROS: [u8; BLOCK_SIZE] = [0; BLOCK_SIZE];
         self.storage.write_at(block_id, &ZEROS, 0).await?;
         Ok(())
     }

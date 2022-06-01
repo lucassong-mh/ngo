@@ -257,6 +257,8 @@ pub const ENTRY_SIZE: usize = size_of::<u32>();
 pub const BLK_NENTRY: usize = BLOCK_SIZE / ENTRY_SIZE;
 /// size of a dirent used in the size field
 pub const DIRENT_SIZE: usize = size_of::<DiskEntry>();
+/// helper zero block to clean data
+pub const ZEROS: [u8; BLOCK_SIZE] = [0; BLOCK_SIZE];
 /// max number of blocks with direct blocks
 pub const MAX_NBLOCK_DIRECT: usize = NDIRECT;
 /// max number of blocks with indirect blocks
