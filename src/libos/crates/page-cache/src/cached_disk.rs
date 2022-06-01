@@ -109,7 +109,9 @@ impl<A: PageAlloc> CachedDisk<A> {
 
     /// Flush all changes onto the backing disk.
     pub async fn flush(&self) -> Result<usize> {
-        self.0.flush().await
+        let flush_num = self.0.flush().await.unwrap();
+        self.0.flush_disk().await?;
+        Ok(flush_num)
     }
 }
 
@@ -315,7 +317,7 @@ impl<A: PageAlloc> Inner<A> {
         Ok(write_len)
     }
 
-    pub async fn flush(&self) -> Result<usize> {
+    pub(crate) async fn flush(&self) -> Result<usize> {
         let mut total_pages = 0;
         let sem = self.arw_lock.write().await;
 
@@ -349,7 +351,6 @@ impl<A: PageAlloc> Inner<A> {
             total_pages += num_pages;
         }
 
-        self.disk.flush().await?;
         drop(sem);
         // At this point, we can be certain that all writes
         // have been persisted to the disk because
@@ -359,6 +360,10 @@ impl<A: PageAlloc> Inner<A> {
         // 4) The underlying disk is also flushed.
         trace!("[CachedDisk] flush pages: {}", total_pages);
         Ok(total_pages)
+    }
+
+    pub(crate) async fn flush_disk(&self) -> Result<()> {
+        self.disk.flush().await
     }
 
     async fn acquire_page(&self, block_id: BlockId) -> Result<PageHandle<BlockId, A>> {
