@@ -1,9 +1,10 @@
 //! This crate provide the abstractions for page cache.
 #![cfg_attr(feature = "sgx", no_std)]
-#![feature(get_mut_unchecked)]
 #![feature(async_closure)]
-#![feature(in_band_lifetimes)]
 #![feature(const_fn_trait_bound)]
+#![feature(get_mut_unchecked)]
+#![feature(in_band_lifetimes)]
+#![feature(map_first_last)]
 
 #[cfg(feature = "sgx")]
 extern crate sgx_types;

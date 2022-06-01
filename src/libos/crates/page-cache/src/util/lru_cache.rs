@@ -105,7 +105,7 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
         })
     }
 
-    pub fn just_get(&mut self, k: &K) -> Option<&V> {
+    pub fn just_get(&self, k: &K) -> Option<&V> {
         if let Some(node) = self.map.get(k) {
             unsafe { Some(&node.as_ref().v) }
         } else {

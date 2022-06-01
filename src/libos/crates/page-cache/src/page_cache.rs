@@ -3,18 +3,20 @@ use crate::LruCache;
 use crate::PageEvictor;
 use object_id::ObjectId;
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
 /// Page cache.
 pub struct PageCache<K: PageKey, A: PageAlloc>(pub(crate) Arc<PageCacheInner<K, A>>);
 
+type PageId = usize;
+
 pub(crate) struct PageCacheInner<K: PageKey, A: PageAlloc> {
     id: ObjectId,
     flusher: Arc<dyn PageCacheFlusher>,
-    cache: Mutex<LruCache<usize, PageHandle<K, A>>>,
-    dirty_set: Mutex<HashSet<usize>>,
+    cache: Mutex<LruCache<PageId, PageHandle<K, A>>>,
+    dirty_set: Mutex<BTreeSet<PageId>>,
     pollee: Pollee,
     marker: PhantomData<(K, A)>,
 }
@@ -56,8 +58,6 @@ impl<K: PageKey, A: PageAlloc> PageCache<K, A> {
         let mut cache = self.0.cache.lock();
         // Cache hit
         if let Some(page_handle_incache) = cache.get(&key.into()) {
-            let page_guard = page_handle_incache.lock();
-            drop(page_guard);
             return Some(page_handle_incache.clone());
         // Cache miss
         } else {
@@ -72,8 +72,8 @@ impl<K: PageKey, A: PageAlloc> PageCache<K, A> {
     /// All page handles obtained via the `acquire` method
     /// must be returned via the `release` method.
     pub fn release(&self, page_handle: &PageHandle<K, A>) {
-        let page_guard = page_handle.lock();
         let mut dirty_set = self.0.dirty_set.lock();
+        let page_guard = page_handle.lock();
         // Update dirty_set when release
         if page_guard.state() == PageState::Dirty {
             dirty_set.insert(page_handle.key().into());
@@ -83,22 +83,51 @@ impl<K: PageKey, A: PageAlloc> PageCache<K, A> {
     }
 
     /// Pop a number of dirty pages and switch their state to
-    /// "flushing".
+    /// "Flushing".
     ///
     /// The handles of dirty pages are pushed into the given `Vec`.
-    /// As most `Vec::capacity` number of dirty pages can be pushed
-    /// into the `Vec`.
-    pub fn flush_dirty(&self, dirty: &mut Vec<PageHandle<K, A>>) -> usize {
+    /// The dirty pages are always consecutive per call.
+    /// Return flush numbers and the first page/block id.
+    pub fn flush_dirty(&self, dirty: &mut Vec<PageHandle<K, A>>) -> (usize, PageId) {
+        let cache = self.0.cache.lock();
         // The dirty_set traces dirty pages
-        let mut cache = self.0.cache.lock();
         let mut dirty_set = self.0.dirty_set.lock();
-        let set_copy = dirty_set.clone();
         let mut flush_num = 0;
-        for key in set_copy.iter() {
-            if dirty.len() >= dirty.capacity() {
+        let mut first_page_key: PageId = 0;
+        let mut pre_key: PageId = 0;
+
+        // Handle first valid page
+        loop {
+            match dirty_set.pop_first() {
+                Some(first_key) => {
+                    if let Some(page_handle_incache) = cache.just_get(&first_key) {
+                        let mut page_guard = page_handle_incache.lock();
+                        debug_assert!(page_guard.state() == PageState::Dirty);
+
+                        page_guard.set_state(PageState::Flushing);
+                        dirty.push(page_handle_incache.clone());
+                        flush_num += 1;
+                        drop(page_guard);
+
+                        first_page_key = first_key;
+                        pre_key = first_key;
+                        break;
+                    }
+                }
+                None => {
+                    return (0, pre_key);
+                }
+            }
+        }
+
+        // Handle following valid pages
+        while let Some(cur_key) = dirty_set.pop_first() {
+            // Ensure always return consecutive pages
+            if cur_key - pre_key > 1 {
                 break;
             }
-            if let Some(page_handle_incache) = cache.just_get(key) {
+
+            if let Some(page_handle_incache) = cache.just_get(&cur_key) {
                 let mut page_guard = page_handle_incache.lock();
                 debug_assert!(page_guard.state() == PageState::Dirty);
 
@@ -106,10 +135,12 @@ impl<K: PageKey, A: PageAlloc> PageCache<K, A> {
                 dirty.push(page_handle_incache.clone());
                 flush_num += 1;
                 drop(page_guard);
+
+                pre_key = cur_key;
             }
-            dirty_set.remove(key);
         }
-        flush_num
+
+        (flush_num, first_page_key)
     }
 
     pub fn size(&self) -> usize {
@@ -156,7 +187,7 @@ impl<K: PageKey, A: PageAlloc> PageCacheInner<K, A> {
             id: ObjectId::new(),
             flusher,
             cache: Mutex::new(LruCache::new(0)),
-            dirty_set: Mutex::new(HashSet::new()),
+            dirty_set: Mutex::new(BTreeSet::new()),
             pollee: Pollee::new(Events::empty()),
             marker: PhantomData,
         }

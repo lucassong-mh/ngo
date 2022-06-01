@@ -28,22 +28,32 @@ impl<A: PageAlloc> Page<A> {
         })
     }
 
+    #[inline]
+    pub fn as_ptr(&self) -> NonNull<u8> {
+        self.ptr
+    }
+
+    #[inline]
     pub fn as_slice(&self) -> &[u8] {
         unsafe { std::slice::from_raw_parts(self.ptr.as_ptr(), Self::size()) }
     }
 
+    #[inline]
     pub fn as_slice_mut(&mut self) -> &mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.ptr.as_ptr(), Self::size()) }
     }
 
+    #[inline]
     pub const fn size() -> usize {
         4096
     }
 
+    #[inline]
     pub const fn align() -> usize {
         4096
     }
 
+    #[inline]
     pub const fn layout() -> Layout {
         unsafe { Layout::from_size_align_unchecked(Self::size(), Self::align()) }
     }

@@ -2,6 +2,7 @@ use crate::prelude::*;
 use crate::Page;
 
 use std::fmt::{Debug, Formatter};
+use std::ptr::NonNull;
 use std::sync::Arc;
 
 pub trait PageKey: Into<usize> + Copy + Send + Sync + Debug + 'static {}
@@ -70,6 +71,10 @@ impl<'a, A: PageAlloc> PageHandleGuard<'a, A> {
         debug_assert!(allow_state_transition(self.state(), new_state));
 
         self.0 .0 = new_state;
+    }
+
+    pub fn as_ptr(&self) -> NonNull<u8> {
+        self.0 .1.as_ptr()
     }
 
     pub fn as_slice(&self) -> &[u8] {

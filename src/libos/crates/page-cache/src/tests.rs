@@ -76,7 +76,7 @@ fn page_cache_flush() {
         cache.release(&page_handle);
 
         let mut dirty = Vec::with_capacity(128);
-        let dirty_num = cache.flush_dirty(&mut dirty);
+        let (dirty_num, _) = cache.flush_dirty(&mut dirty);
         assert_eq!(dirty_num, 1);
 
         let page_handle = cache.acquire(key).unwrap();
@@ -88,7 +88,7 @@ fn page_cache_flush() {
         cache.release(&page_handle);
 
         let mut dirty = Vec::with_capacity(128);
-        let dirty_num = cache.flush_dirty(&mut dirty);
+        let (dirty_num, _) = cache.flush_dirty(&mut dirty);
         assert_eq!(dirty_num, 0);
     })
 }
