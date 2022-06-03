@@ -908,10 +908,11 @@ impl AsyncSimpleFS {
         device_storage
             .read_at(BLKN_FREEMAP, freemap_disk.as_mut_slice(), 0)
             .await?;
+        let freemap_bitset = BitVec::from(freemap_disk.as_slice());
 
         Ok(Self(Some(FsInner {
             super_block: AsyncRwLock::new(Dirty::new(super_block)),
-            free_map: AsyncRwLock::new(Dirty::new(BitVec::from(freemap_disk.as_slice()))),
+            free_map: AsyncRwLock::new(Dirty::new(FreeMap::from_bitset(freemap_bitset))),
             inodes: AsyncRwLock::new(LruCache::new(INODE_CACHE_SIZE)),
             #[cfg(feature = "pagecache")]
             storage: SFSStorage::from_page_cache(CachedDisk::<SFSPageAlloc>::new(device).unwrap()),
@@ -942,7 +943,7 @@ impl AsyncSimpleFS {
             for i in (BLKN_FREEMAP + freemap_blocks)..blocks {
                 bitset.set(i, true);
             }
-            bitset
+            FreeMap::from_bitset(bitset)
         };
 
         let sfs = Self(Some(FsInner {
@@ -1056,7 +1057,7 @@ impl FsInner {
         if let Some(block_id) = id {
             let mut super_block = self.super_block.write().await;
             if super_block.unused_blocks == 0 {
-                free_map.set(block_id, true);
+                free_map.free(block_id);
                 return None;
             }
             // will not underflow
@@ -1073,8 +1074,8 @@ impl FsInner {
     async fn free_block(&self, block_id: BlockId) -> Result<()> {
         let mut free_map = self.free_map.write().await;
         let mut super_block = self.super_block.write().await;
-        assert!(!free_map[block_id]);
-        free_map.set(block_id, true);
+        assert!(free_map.is_allocated(block_id));
+        free_map.free(block_id);
         super_block.unused_blocks += 1;
         //trace!("free block {:#x}", block_id);
         // clean the block after free
@@ -1102,7 +1103,7 @@ impl FsInner {
     /// Get inode by id. Load if not in memory.
     /// ** Must ensure it's a valid INode **
     async fn get_inode(&self, id: InodeId) -> Arc<SFSInode> {
-        assert!(!self.free_map.read().await[id]);
+        assert!(self.free_map.read().await.is_allocated(id));
 
         // In the cache
         if let Some(inode) = self.inodes.write().await.get(&id) {

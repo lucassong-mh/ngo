@@ -23,8 +23,53 @@ pub struct SuperBlock {
     pub freemap_blocks: u32,
 }
 
+/// On-disk freemap bitset
+pub type FreeMapBitSet = BitVec<Lsb0, u8>;
+
 /// Described the usage of blocks
-pub type FreeMap = BitVec<Lsb0, u8>;
+#[derive(Clone, Debug)]
+pub struct FreeMap {
+    bitset: FreeMapBitSet,
+    first_unused_id: Option<usize>,
+}
+
+impl FreeMap {
+    pub fn from_bitset(bitset: FreeMapBitSet) -> Self {
+        let first_unused_id = (0..bitset.len()).find(|&i| bitset[i]);
+        Self {
+            bitset,
+            first_unused_id,
+        }
+    }
+
+    pub fn alloc(&mut self) -> Option<usize> {
+        if let Some(alloc_id) = self.first_unused_id {
+            self.bitset.set(alloc_id, false);
+            let next_unused_id = (alloc_id + 1..self.bitset.len()).find(|&i| self.bitset[i]);
+            self.first_unused_id = next_unused_id;
+            Some(alloc_id)
+        } else {
+            None
+        }
+    }
+
+    pub fn free(&mut self, id: usize) {
+        self.bitset.set(id, true);
+        match self.first_unused_id {
+            Some(old_id) if id < old_id => {
+                self.first_unused_id = Some(id);
+            }
+            Some(_) => {}
+            None => {
+                self.first_unused_id = Some(id);
+            }
+        }
+    }
+
+    pub fn is_allocated(&self, id: usize) -> bool {
+        !self.bitset[id]
+    }
+}
 
 /// inode (on disk)
 #[repr(C)]
@@ -182,21 +227,6 @@ impl DiskInode {
     }
 }
 
-pub trait BitsetAlloc {
-    fn alloc(&mut self) -> Option<usize>;
-}
-
-impl BitsetAlloc for FreeMap {
-    fn alloc(&mut self) -> Option<usize> {
-        // TODO: more efficient
-        let id = (0..self.len()).find(|&i| self[i]);
-        if let Some(id) = id {
-            self.set(id, false);
-        }
-        id
-    }
-}
-
 /// Convert structs to [u8] slice
 pub trait AsBuf {
     fn as_buf(&self) -> &[u8] {
@@ -219,10 +249,10 @@ impl AsBuf for [u8; BLOCK_SIZE] {}
 
 impl AsBuf for FreeMap {
     fn as_buf(&self) -> &[u8] {
-        self.as_ref()
+        self.bitset.as_ref()
     }
     fn as_buf_mut(&mut self) -> &mut [u8] {
-        self.as_mut()
+        self.bitset.as_mut()
     }
 }
 
