@@ -7,7 +7,7 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = ["libc", "lru/default", "pagecache"]
+default = ["libc", "lru/default", "pagecache" ]
 sgx = ["sgx_types", "sgx_tstd", "sgx_trts", "sgx_libc", "async-vfs/sgx", "async-io/sgx", "async-rt/sgx", "page-cache/sgx", "lru/sgx" ]
 pagecache = []
 
@@ -34,3 +34,4 @@ sgx_libc = { path = "../../../../deps/rust-sgx-sdk/sgx_libc", optional = true }
 
 [dev-dependencies]
 async-rt = { path = "../async-rt", features = ["auto_run"] }
+sgx-disk= { path = "../sgx-disk" }

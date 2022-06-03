@@ -528,3 +528,43 @@ fn ext() -> Result<()> {
         Ok(())
     })
 }
+
+// benchmark test
+use sgx_disk::{HostDisk, SyncIoDisk};
+
+const MB: usize = 1024 * 1024;
+const GB: usize = MB * 1024;
+
+async fn _create_new_sfs_disk() -> Arc<AsyncSimpleFS> {
+    let num_blocks = 2 * GB / BLOCK_SIZE;
+    let image_path = std::path::PathBuf::from("./image");
+    if image_path.exists() {
+        std::fs::remove_file(&image_path).unwrap();
+    }
+    let sync_disk = SyncIoDisk::create(&image_path, num_blocks).unwrap();
+    let sfs = AsyncSimpleFS::create(Arc::new(sync_disk)).await.unwrap();
+    sfs
+}
+
+// run 'cargo test bench --release -- --nocapture' to get the result
+#[test]
+fn seq_write_bench() -> Result<()> {
+    async_rt::task::block_on(async move {
+        let sfs = _create_new_sfs_disk().await;
+        let root = sfs.root_inode().await;
+        let file1 = root.create("file1", VfsFileType::File, 0o777).await?;
+        static BUFFER: [u8; BLOCK_SIZE] = [0x1; BLOCK_SIZE];
+        // Waning: the resize inside wite_at is very slow,
+        // so we resize before test.
+        //file1.resize(1 * GB).await?;
+        let now = std::time::SystemTime::now();
+        for i in 0..1 * GB / BLOCK_SIZE {
+            file1.write_at(i * BLOCK_SIZE, &BUFFER).await?;
+        }
+        let secs = now.elapsed().unwrap().as_secs_f64();
+        println!("{:?} seconds elapsed", secs);
+        println!("seq-write throughput: {:?} MB/s", (GB / MB) as f64 / secs);
+        sfs.sync().await?;
+        Ok(())
+    })
+}
