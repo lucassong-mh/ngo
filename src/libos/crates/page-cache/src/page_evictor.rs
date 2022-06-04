@@ -2,8 +2,6 @@ use crate::page_cache::PageCacheInner;
 use crate::prelude::*;
 use block_device::AnyMap;
 use lazy_static::lazy_static;
-#[cfg(feature = "sgx")]
-use sgx_trts::trts;
 
 use std::future::Future;
 use std::marker::PhantomData;
@@ -155,24 +153,10 @@ impl<K: PageKey, A: PageAlloc> EvictorTaskInner<K, A> {
         loop {
             if let Some(caches) = self.caches.try_lock() {
                 if caches.len() > 0 {
-                    cfg_if::cfg_if! {
-                        // Load balance betwen the page caches
-                        // so that pages are evenly evicted
-                        if #[cfg(feature = "sgx")] {
-                            let mut rand_arr = [0; 4];
-                            trts::rsgx_read_rand(&mut rand_arr[..]);
-                            let random: usize = rand_arr[0] as usize % caches.len();
-                            for i in random..caches.len() {
-                                f(caches[i].clone()).await;
-                            }
-                            for i in 0..random {
-                                f(caches[i].clone()).await;
-                            }
-                        } else {
-                            for i in 0..caches.len() {
-                                f(caches[i].clone()).await;
-                            }
-                        }
+                    // TODO: Load balance betwen the page caches
+                    // so that pages are evenly evicted
+                    for i in 0..caches.len() {
+                        f(caches[i].clone()).await;
                     }
                 }
                 drop(caches);
@@ -188,23 +172,8 @@ impl<K: PageKey, A: PageAlloc> EvictorTaskInner<K, A> {
     {
         let caches = self.caches.lock();
         if caches.len() > 0 {
-            cfg_if::cfg_if! {
-                // Random access
-                if #[cfg(feature = "sgx")] {
-                    let mut rand_arr = [0; 4];
-                    trts::rsgx_read_rand(&mut rand_arr[..]);
-                    let random: usize = rand_arr[0] as usize % caches.len();
-                    for i in random..caches.len() {
-                        f(&caches[i]);
-                    }
-                    for i in 0..random {
-                        f(&caches[i]);
-                    }
-                } else {
-                    for i in 0..caches.len() {
-                        f(&caches[i]);
-                    }
-                }
+            for i in 0..caches.len() {
+                f(&caches[i]);
             }
         }
         drop(caches);

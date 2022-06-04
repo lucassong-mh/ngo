@@ -1,6 +1,4 @@
-use std::{
-    borrow::Borrow, boxed::Box, collections::HashMap, hash::Hash, marker::PhantomData, ptr::NonNull,
-};
+use std::{borrow::Borrow, boxed::Box, collections::HashMap, hash::Hash, ptr::NonNull};
 
 struct Node<K, V> {
     k: K,
@@ -47,10 +45,10 @@ pub struct LruCache<K, V> {
     tail: Option<NonNull<Node<K, V>>>,
     map: HashMap<KeyRef<K, V>, NonNull<Node<K, V>>>,
     cap: usize,
-    marker: PhantomData<Node<K, V>>,
 }
 
-unsafe impl<K, V> Send for LruCache<K, V> {}
+// Safety. K and V implement Send.
+unsafe impl<K: Send, V: Send> Send for LruCache<K, V> {}
 
 impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
     pub fn new(cap: usize) -> Self {
@@ -59,7 +57,6 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
             tail: None,
             map: HashMap::new(),
             cap,
-            marker: PhantomData,
         }
     }
 
@@ -163,7 +160,7 @@ impl<K, V> Drop for LruCache<K, V> {
         while let Some(node) = self.head.take() {
             unsafe {
                 self.head = node.as_ref().next;
-                drop(node.as_ptr());
+                drop(Box::from_raw(node.as_ptr()));
             }
         }
     }

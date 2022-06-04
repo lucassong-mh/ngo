@@ -71,7 +71,7 @@ impl<K: PageKey, A: PageAlloc> PageCache<K, A> {
     ///
     /// All page handles obtained via the `acquire` method
     /// must be returned via the `release` method.
-    pub fn release(&self, page_handle: &PageHandle<K, A>) {
+    pub fn release(&self, page_handle: PageHandle<K, A>) {
         let mut dirty_set = self.0.dirty_set.lock();
         let page_guard = page_handle.lock();
         // Update dirty_set when release
@@ -86,48 +86,15 @@ impl<K: PageKey, A: PageAlloc> PageCache<K, A> {
     /// "Flushing".
     ///
     /// The handles of dirty pages are pushed into the given `Vec`.
-    /// The dirty pages are always consecutive per call.
-    /// Return flush numbers and the first page/block id.
-    pub fn flush_dirty(&self, dirty: &mut Vec<PageHandle<K, A>>) -> (usize, PageId) {
+    /// The dirty pages are in ascending order. Return flush numbers.
+    pub fn flush_dirty(&self, dirty: &mut Vec<PageHandle<K, A>>) -> usize {
         let cache = self.0.cache.lock();
         // The dirty_set traces dirty pages
         let mut dirty_set = self.0.dirty_set.lock();
         let mut flush_num = 0;
-        let mut first_page_key: PageId = 0;
-        let mut pre_key: PageId = 0;
 
-        // Handle first valid page
-        loop {
-            match dirty_set.pop_first() {
-                Some(first_key) => {
-                    if let Some(page_handle_incache) = cache.just_get(&first_key) {
-                        let mut page_guard = page_handle_incache.lock();
-                        debug_assert!(page_guard.state() == PageState::Dirty);
-
-                        page_guard.set_state(PageState::Flushing);
-                        dirty.push(page_handle_incache.clone());
-                        flush_num += 1;
-                        drop(page_guard);
-
-                        first_page_key = first_key;
-                        pre_key = first_key;
-                        break;
-                    }
-                }
-                None => {
-                    return (0, pre_key);
-                }
-            }
-        }
-
-        // Handle following valid pages
-        while let Some(cur_key) = dirty_set.pop_first() {
-            // Ensure always return consecutive pages
-            if cur_key - pre_key > 1 {
-                break;
-            }
-
-            if let Some(page_handle_incache) = cache.just_get(&cur_key) {
+        while let Some(page_key) = dirty_set.pop_first() {
+            if let Some(page_handle_incache) = cache.just_get(&page_key) {
                 let mut page_guard = page_handle_incache.lock();
                 debug_assert!(page_guard.state() == PageState::Dirty);
 
@@ -135,12 +102,9 @@ impl<K: PageKey, A: PageAlloc> PageCache<K, A> {
                 dirty.push(page_handle_incache.clone());
                 flush_num += 1;
                 drop(page_guard);
-
-                pre_key = cur_key;
             }
         }
-
-        (flush_num, first_page_key)
+        flush_num
     }
 
     pub fn size(&self) -> usize {
@@ -211,11 +175,16 @@ impl<K: PageKey, A: PageAlloc> PageCacheInner<K, A> {
         let mut evict_num = 0;
         for _ in 0..evict_total {
             if let Some(page_handle) = cache.evict() {
-                let mut page_guard = page_handle.lock();
-                drop(page_guard.page());
-                evict_num += 1;
-                drop(page_guard);
-                drop(page_handle);
+                debug_assert!(Arc::strong_count(&page_handle.0) == 1);
+                let page_guard = page_handle.lock();
+                if page_guard.state() == PageState::UpToDate {
+                    drop(page_guard);
+                    drop(page_handle);
+                    evict_num += 1;
+                } else {
+                    drop(page_guard);
+                    cache.put(page_handle.key().into(), page_handle.clone());
+                }
             }
         }
         evict_num

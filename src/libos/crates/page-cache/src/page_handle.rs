@@ -9,8 +9,8 @@ pub trait PageKey: Into<usize> + Copy + Send + Sync + Debug + 'static {}
 
 /// Page handle.
 #[derive(Clone)]
-pub struct PageHandle<K: PageKey, A: PageAlloc>(Arc<Inner<K, A>>);
-struct Inner<K: PageKey, A: PageAlloc> {
+pub struct PageHandle<K: PageKey, A: PageAlloc>(pub(crate) Arc<Inner<K, A>>);
+pub(crate) struct Inner<K: PageKey, A: PageAlloc> {
     key: K,
     pollee: Pollee,
     state_and_page: Mutex<(PageState, Page<A>)>,

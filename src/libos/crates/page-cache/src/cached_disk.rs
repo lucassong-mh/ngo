@@ -111,9 +111,7 @@ impl<A: PageAlloc> CachedDisk<A> {
 
     /// Flush all changes onto the backing disk.
     pub async fn flush(&self) -> Result<usize> {
-        let flush_num = self.0.flush().await.unwrap();
-        self.0.flush_disk().await?;
-        Ok(flush_num)
+        self.0.flush_disk().await
     }
 }
 
@@ -171,13 +169,19 @@ impl<A: PageAlloc> Inner<A> {
 
             let read_buf = &mut buf[buf_pos..buf_pos + end_pos - begin_pos];
             if read_buf.len() > 0 {
-                read_len += self.read_one_page(current_id, read_buf, begin_pos).await?;
+                read_len +=
+                    if let Ok(len) = self.read_one_page(current_id, read_buf, begin_pos).await {
+                        len
+                    } else {
+                        error!("[CachedDisk] read one page failed, id: {}", current_id);
+                        0
+                    }
             }
 
             buf_pos += end_pos - begin_pos;
         }
 
-        assert_eq!(read_len, buf.len(), "[CachedDisk] read failed");
+        debug_assert!(read_len == buf.len());
         Ok(read_len)
     }
 
@@ -199,15 +203,19 @@ impl<A: PageAlloc> Inner<A> {
 
             let write_buf = &buf[buf_pos..buf_pos + end_pos - begin_pos];
             if write_buf.len() > 0 {
-                write_len += self
-                    .write_one_page(current_id, write_buf, begin_pos)
-                    .await?;
+                write_len +=
+                    if let Ok(len) = self.write_one_page(current_id, write_buf, begin_pos).await {
+                        len
+                    } else {
+                        error!("[CachedDisk] write one page failed, id: {}", current_id);
+                        0
+                    }
             }
 
             buf_pos += end_pos - begin_pos;
         }
 
-        assert_eq!(write_len, buf.len(), "[CachedDisk] write failed");
+        debug_assert!(write_len == buf.len());
         Ok(write_len)
     }
 
@@ -221,7 +229,7 @@ impl<A: PageAlloc> Inner<A> {
     }
 
     async fn read_one_page(&self, bid: BlockId, buf: &mut [u8], offset: usize) -> Result<usize> {
-        assert!(buf.len() + offset <= BLOCK_SIZE);
+        debug_assert!(buf.len() + offset <= BLOCK_SIZE);
 
         let page_handle = self.acquire_page(bid).await?;
         let mut page_guard = page_handle.lock();
@@ -239,11 +247,18 @@ impl<A: PageAlloc> Inner<A> {
                     page_guard.set_state(PageState::Fetching);
                     Self::clear_page_events(&page_handle);
 
-                    let page_slice = page_guard.as_slice_mut();
+                    let page_ptr = page_guard.as_slice_mut();
+                    let page_buf = unsafe {
+                        std::slice::from_raw_parts_mut(page_ptr.as_mut_ptr(), BLOCK_SIZE)
+                    };
+                    drop(page_guard);
+
                     // Read one block from disk to current page
-                    self.read_block(bid, page_slice).await.unwrap();
+                    self.read_block(bid, page_buf).await?;
                     Self::notify_page_events(&page_handle, Events::IN);
 
+                    page_guard = page_handle.lock();
+                    debug_assert!(page_guard.state() == PageState::Fetching);
                     page_guard.set_state(PageState::UpToDate);
                     break;
                 }
@@ -262,12 +277,12 @@ impl<A: PageAlloc> Inner<A> {
         buf.copy_from_slice(&src_buf[offset..offset + read_len]);
 
         drop(page_guard);
-        self.cache.release(&page_handle);
+        self.cache.release(page_handle);
         Ok(read_len)
     }
 
     async fn write_one_page(&self, bid: BlockId, buf: &[u8], offset: usize) -> Result<usize> {
-        assert!(buf.len() + offset <= BLOCK_SIZE);
+        debug_assert!(buf.len() + offset <= BLOCK_SIZE);
         let sem = self.arw_lock.read().await;
 
         let page_handle = self.acquire_page(bid).await?;
@@ -277,10 +292,24 @@ impl<A: PageAlloc> Inner<A> {
         loop {
             match page_guard.state() {
                 PageState::Uninit => {
-                    // Read latest content of current page from disk before write
+                    // Read latest content of current page from disk before write.
+                    // Only occur in partial writes.
                     if buf.len() < BLOCK_SIZE {
-                        let page_slice = page_guard.as_slice_mut();
-                        self.read_block(bid, page_slice).await.unwrap();
+                        page_guard.set_state(PageState::Fetching);
+                        Self::clear_page_events(&page_handle);
+
+                        let page_ptr = page_guard.as_slice_mut();
+                        let page_buf = unsafe {
+                            std::slice::from_raw_parts_mut(page_ptr.as_mut_ptr(), BLOCK_SIZE)
+                        };
+                        drop(page_guard);
+
+                        self.read_block(bid, page_buf).await?;
+                        Self::notify_page_events(&page_handle, Events::IN);
+
+                        page_guard = page_handle.lock();
+                        debug_assert!(page_guard.state() == PageState::Fetching);
+                        page_guard.set_state(PageState::UpToDate);
                     }
                     break;
                 }
@@ -304,7 +333,7 @@ impl<A: PageAlloc> Inner<A> {
         page_guard.set_state(PageState::Dirty);
 
         drop(page_guard);
-        self.cache.release(&page_handle);
+        self.cache.release(page_handle);
         drop(sem);
         Ok(write_len)
     }
@@ -313,32 +342,34 @@ impl<A: PageAlloc> Inner<A> {
         let mut total_pages = 0;
         let sem = self.arw_lock.write().await;
 
+        let mut flush_pages = Vec::with_capacity(128);
         loop {
-            let mut flush_pages = Vec::with_capacity(128);
-            let (num_pages, block_id) = self.cache.flush_dirty(&mut flush_pages);
+            flush_pages.clear();
+            let num_pages = self.cache.flush_dirty(&mut flush_pages);
             if num_pages == 0 {
                 break;
             }
 
-            let mut page_bufs = Vec::with_capacity(num_pages);
             for page_handle in &flush_pages {
-                let mut page_guard = page_handle.lock();
+                let page_guard = page_handle.lock();
                 debug_assert!(page_guard.state() == PageState::Flushing);
                 Self::clear_page_events(&page_handle);
 
-                let page_ptr = page_guard.as_ptr();
-                unsafe {
-                    page_bufs.push(BlockBuf::from_raw_parts(page_ptr, BLOCK_SIZE));
-                }
+                let bid = page_handle.key();
+                let page_ptr = page_guard.as_slice();
+                let page_buf = unsafe { std::slice::from_raw_parts(page_ptr.as_ptr(), BLOCK_SIZE) };
+                drop(page_guard);
+
+                self.write_block(&bid, page_buf).await.unwrap();
                 Self::notify_page_events(&page_handle, Events::OUT);
 
+                let mut page_guard = page_handle.lock();
+                debug_assert!(page_guard.state() == PageState::Flushing);
                 page_guard.set_state(PageState::UpToDate);
                 drop(page_guard);
-                self.cache.release(page_handle);
-            }
 
-            debug_assert!(page_bufs.len() == num_pages);
-            self.batch_write_blocks(block_id, page_bufs).await?;
+                self.cache.release(page_handle.clone());
+            }
 
             total_pages += num_pages;
         }
@@ -354,8 +385,10 @@ impl<A: PageAlloc> Inner<A> {
         Ok(total_pages)
     }
 
-    pub(crate) async fn flush_disk(&self) -> Result<()> {
-        self.disk.flush().await
+    pub(crate) async fn flush_disk(&self) -> Result<usize> {
+        let flush_num = self.flush().await.unwrap();
+        self.disk.flush().await;
+        Ok(flush_num)
     }
 
     async fn acquire_page(&self, block_id: BlockId) -> Result<PageHandle<BlockId, A>> {
@@ -392,7 +425,6 @@ impl<A: PageAlloc> Inner<A> {
         let req = submission.complete().await;
         let res = req.response().unwrap();
 
-        debug_assert!(Arc::strong_count(&req) == 1);
         if let Err(e) = res {
             return Err(errno!(e.errno(), "write on a block device failed"));
         }

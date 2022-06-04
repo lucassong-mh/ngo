@@ -48,7 +48,7 @@ fn page_cache_acquire_release() {
     drop(page_guard);
 
     write_page(&page_handle, content);
-    cache.release(&page_handle);
+    cache.release(page_handle);
     assert_eq!(cache.size(), 1);
 
     let page_handle = cache.acquire(key).unwrap();
@@ -59,7 +59,7 @@ fn page_cache_acquire_release() {
 
     let read_content = read_page(&page_handle);
     assert_eq!(read_content, content);
-    cache.release(&page_handle);
+    cache.release(page_handle);
     assert_eq!(cache.size(), 1);
 }
 
@@ -73,10 +73,10 @@ fn page_cache_flush() {
         let mut page_guard = page_handle.lock();
         page_guard.set_state(PageState::Dirty);
         drop(page_guard);
-        cache.release(&page_handle);
+        cache.release(page_handle);
 
         let mut dirty = Vec::with_capacity(128);
-        let (dirty_num, _) = cache.flush_dirty(&mut dirty);
+        let dirty_num = cache.flush_dirty(&mut dirty);
         assert_eq!(dirty_num, 1);
 
         let page_handle = cache.acquire(key).unwrap();
@@ -85,10 +85,10 @@ fn page_cache_flush() {
         cache.0.flush().await;
         page_guard.set_state(PageState::UpToDate);
         drop(page_guard);
-        cache.release(&page_handle);
+        cache.release(page_handle);
 
         let mut dirty = Vec::with_capacity(128);
-        let (dirty_num, _) = cache.flush_dirty(&mut dirty);
+        let dirty_num = cache.flush_dirty(&mut dirty);
         assert_eq!(dirty_num, 0);
     })
 }
@@ -98,7 +98,10 @@ fn page_cache_evict() {
     let cache = new_page_cache();
     const CAPACITY: usize = 15;
     for key in 0..CAPACITY {
-        cache.acquire(key).unwrap();
+        let page_handle = cache.acquire(key).unwrap();
+        let mut page_guard = page_handle.lock();
+        page_guard.set_state(PageState::Fetching);
+        page_guard.set_state(PageState::UpToDate);
     }
 
     assert_eq!(cache.size(), CAPACITY);
