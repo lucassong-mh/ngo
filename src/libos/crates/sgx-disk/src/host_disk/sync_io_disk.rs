@@ -2,6 +2,7 @@ use block_device::{BioReq, BioSubmission, BioType, BlockDevice};
 use fs::File;
 use std::io::prelude::*;
 use std::io::{IoSlice, IoSliceMut, SeekFrom};
+use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 
 use super::OpenOptions;
@@ -20,7 +21,7 @@ use crate::HostDisk;
 /// It is recommended to use `IoUringDisk` for an optimal performance.
 #[derive(Debug)]
 pub struct SyncIoDisk {
-    file: Mutex<File>,
+    file: File,
     path: PathBuf,
     total_blocks: usize,
     can_read: bool,
@@ -33,23 +34,22 @@ impl SyncIoDisk {
             return Err(errno!(EACCES, "read is not allowed"));
         }
 
-        let (offset, _) = self.get_range_in_bytes(&req)?;
+        let (mut offset, _) = self.get_range_in_bytes(&req)?;
 
-        let mut file = self.file.lock().unwrap();
-        file.seek(SeekFrom::Start(offset as u64))?;
         let read_len = req.access_mut_bufs_with(|bufs| {
-            let mut slices: Vec<IoSliceMut<'_>> = bufs
-                .iter_mut()
-                .map(|buf| IoSliceMut::new(buf.as_slice_mut()))
-                .collect();
-
             // TODO: fix this limitation
             const LINUX_IOVS_MAX: usize = 1024;
-            debug_assert!(slices.len() < LINUX_IOVS_MAX);
+            debug_assert!(bufs.len() < LINUX_IOVS_MAX);
 
-            file.read_vectored(&mut slices)
-        })?;
-        drop(file);
+            let mut read_len = 0usize;
+            for buf in bufs {
+                if let Ok(len) = self.file.read_at(buf.as_slice_mut(), offset as u64) {
+                    read_len += len;
+                }
+                offset += BLOCK_SIZE;
+            }
+            read_len
+        });
 
         debug_assert!(read_len / BLOCK_SIZE == req.num_blocks());
         Ok(())
@@ -60,23 +60,22 @@ impl SyncIoDisk {
             return Err(errno!(EACCES, "write is not allowed"));
         }
 
-        let (offset, _) = self.get_range_in_bytes(&req)?;
+        let (mut offset, _) = self.get_range_in_bytes(&req)?;
 
-        let mut file = self.file.lock().unwrap();
-        file.seek(SeekFrom::Start(offset as u64))?;
         let write_len = req.access_bufs_with(|bufs| {
-            let slices: Vec<IoSlice<'_>> = bufs
-                .iter()
-                .map(|buf| IoSlice::new(buf.as_slice()))
-                .collect();
-
             // TODO: fix this limitation
             const LINUX_IOVS_MAX: usize = 1024;
-            debug_assert!(slices.len() < LINUX_IOVS_MAX);
+            debug_assert!(bufs.len() < LINUX_IOVS_MAX);
 
-            file.write_vectored(&slices)
-        })?;
-        drop(file);
+            let mut write_len = 0usize;
+            for buf in bufs {
+                if let Ok(len) = self.file.write_at(buf.as_slice(), offset as u64) {
+                    write_len += len;
+                }
+                offset += BLOCK_SIZE;
+            }
+            write_len
+        });
 
         debug_assert!(write_len / BLOCK_SIZE == req.num_blocks());
         Ok(())
@@ -87,9 +86,7 @@ impl SyncIoDisk {
             return Err(errno!(EACCES, "flush is not allowed"));
         }
 
-        let file = self.file.lock().unwrap();
-        file.sync_data()?;
-        drop(file);
+        self.file.sync_data()?;
 
         Ok(())
     }
@@ -144,7 +141,7 @@ impl HostDisk for SyncIoDisk {
         let can_write = options.write;
         let path = path.to_owned();
         let new_self = Self {
-            file: Mutex::new(file),
+            file,
             path,
             total_blocks,
             can_read,
