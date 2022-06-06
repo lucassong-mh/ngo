@@ -269,11 +269,11 @@ impl AsyncInode for SFSInode {
         target: &Arc<dyn AsyncInode>,
         new_name: &str,
     ) -> Result<()> {
-        let info = self.metadata().await?;
-        if info.type_ != VfsFileType::Dir {
+        let self_info = self.metadata().await?;
+        if self_info.type_ != VfsFileType::Dir {
             return_errno!(ENOTDIR, "self not dir");
         }
-        if info.nlinks == 0 {
+        if self_info.nlinks == 0 {
             return_errno!(ENOENT, "dir removed");
         }
         if old_name == "." || old_name == ".." {
@@ -294,23 +294,22 @@ impl AsyncInode for SFSInode {
             return_errno!(ENOENT, "dest dir removed");
         }
 
-        let (inode_id, inode_type, entry_id) = self
-            .inner
-            .read()
-            .await
-            .get_file_inode_and_entry_id(old_name)
-            .await
-            .ok_or(errno!(ENOENT, "not found"))?;
+        let inode = self.find(old_name).await?;
+        // Avoid deadlock
+        if inode.metadata().await?.inode == dest.metadata().await?.inode {
+            return_errno!(EINVAL, "invalid path");
+        }
+
         if let Ok(dest_inode) = dest.find(new_name).await {
-            let info = dest_inode.metadata().await?;
-            if inode_id == info.inode {
+            if inode.metadata().await?.inode == dest_inode.metadata().await?.inode {
+                // Same Inode, do nothing
                 return Ok(());
             }
-            let old_type = VfsFileType::from(inode_type);
-            let dest_type = info.type_;
-            match (old_type, dest_type) {
+            let inode_type = inode.metadata().await?.type_;
+            let dest_type = dest_inode.metadata().await?.type_;
+            match (inode_type, dest_type) {
                 (VfsFileType::Dir, VfsFileType::Dir) => {
-                    if info.size / DIRENT_SIZE != 2 {
+                    if dest_inode.metadata().await?.size / DIRENT_SIZE > 2 {
                         return_errno!(ENOTEMPTY, "dir not empty");
                     }
                 }
@@ -325,7 +324,14 @@ impl AsyncInode for SFSInode {
             dest.unlink(new_name).await?;
         }
 
-        if info.inode == dest_info.inode {
+        let (inode_id, inode_type, entry_id) = self
+            .inner
+            .read()
+            .await
+            .get_file_inode_and_entry_id(old_name)
+            .await
+            .ok_or(errno!(ENOENT, "not found"))?;
+        if self_info.inode == dest_info.inode {
             // rename: in place modify name
             self.inner
                 .write()
@@ -350,8 +356,6 @@ impl AsyncInode for SFSInode {
                 })
                 .await?;
             self_inner_mut.remove_direntry(entry_id).await?;
-
-            let inode = self_inner_mut.fs().inner().get_inode(inode_id).await;
             if inode.metadata().await?.type_ == VfsFileType::Dir {
                 self_inner_mut.nlinks_dec();
                 dest_inner_mut.nlinks_inc();
