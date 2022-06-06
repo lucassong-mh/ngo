@@ -104,6 +104,7 @@ impl AsyncInode for SFSInode {
     }
 
     async fn sync_all(&self) -> Result<()> {
+        self.inner.read().await.sync_data().await?;
         if self.inner.read().await.dirty() {
             self.inner.write().await.sync_metadata().await?;
         }
@@ -111,8 +112,7 @@ impl AsyncInode for SFSInode {
     }
 
     async fn sync_data(&self) -> Result<()> {
-        // Do nothing?
-        Ok(())
+        self.inner.read().await.sync_data().await
     }
 
     async fn resize(&self, len: usize) -> Result<()> {
@@ -607,6 +607,32 @@ impl InodeInner {
         }
     }
 
+    /// get the indirect block ids of the file
+    async fn indirect_blocks(&self) -> Result<Vec<BlockId>> {
+        let mut indirect_blocks = Vec::new();
+        let file_blocks = self.disk_inode.blocks as usize;
+        if file_blocks >= MAX_NBLOCK_DIRECT {
+            assert!(self.disk_inode.indirect > 0);
+            indirect_blocks.push(self.disk_inode.indirect as BlockId);
+        }
+        if file_blocks >= MAX_NBLOCK_INDIRECT {
+            assert!(self.disk_inode.db_indirect > 0);
+            indirect_blocks.push(self.disk_inode.db_indirect as BlockId);
+            let indirect_end = (file_blocks - MAX_NBLOCK_INDIRECT) / BLK_NENTRY + 1;
+            for i in 0..indirect_end {
+                let indirect_id = self
+                    .fs()
+                    .inner()
+                    .storage
+                    .load_struct::<u32>(self.disk_inode.db_indirect as BlockId, ENTRY_SIZE * i)
+                    .await?;
+                assert!(indirect_id > 0);
+                indirect_blocks.push(indirect_id as BlockId);
+            }
+        }
+        Ok(indirect_blocks)
+    }
+
     /// Only for Dir
     async fn get_file_inode_and_entry_id(&self, name: &str) -> Option<(InodeId, FileType, usize)> {
         for i in 0..self.disk_inode.size as usize / DIRENT_SIZE {
@@ -876,6 +902,21 @@ impl InodeInner {
         self.disk_inode.dirty()
     }
 
+    async fn sync_data(&self) -> Result<()> {
+        if let Some(cache) = self.fs().inner().storage.as_page_cache() {
+            let data_pages = {
+                let mut data_pages = Vec::new();
+                for id in 0..self.disk_inode.blocks as BlockId {
+                    let device_block_id = self.get_device_block_id(id).await?;
+                    data_pages.push(device_block_id);
+                }
+                data_pages
+            };
+            //cache.flush_pages(&data_pages).await?;
+        }
+        Ok(())
+    }
+
     async fn sync_metadata(&mut self) -> Result<()> {
         if self.disk_inode.nlinks == 0 {
             self._resize(0).await?;
@@ -888,6 +929,14 @@ impl InodeInner {
             .storage
             .store_struct::<DiskInode>(self.id, 0, &self.disk_inode)
             .await?;
+        if let Some(cache) = self.fs().inner().storage.as_page_cache() {
+            let metadata_pages = {
+                let mut metadata_pages = self.indirect_blocks().await?;
+                metadata_pages.push(self.id as BlockId);
+                metadata_pages
+            };
+            //cache.flush_pages(&metadata_pages).await?;
+        }
         self.disk_inode.sync();
         Ok(())
     }

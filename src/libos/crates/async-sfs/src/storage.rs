@@ -89,4 +89,11 @@ impl SFSStorage {
             }
         }
     }
+
+    pub fn as_page_cache(&self) -> Option<&CachedDisk<SFSPageAlloc>> {
+        match self {
+            Self::PageCache(cache) => Some(cache),
+            _ => None,
+        }
+    }
 }
