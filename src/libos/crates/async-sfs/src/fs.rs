@@ -912,7 +912,7 @@ impl InodeInner {
                 }
                 data_pages
             };
-            //cache.flush_pages(&data_pages).await?;
+            cache.flush_pages(&data_pages).await?;
         }
         Ok(())
     }
@@ -935,7 +935,7 @@ impl InodeInner {
                 metadata_pages.push(self.id as BlockId);
                 metadata_pages
             };
-            //cache.flush_pages(&metadata_pages).await?;
+            cache.flush_pages(&metadata_pages).await?;
         }
         self.disk_inode.sync();
         Ok(())

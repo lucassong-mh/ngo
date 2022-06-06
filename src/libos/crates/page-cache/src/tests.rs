@@ -194,6 +194,26 @@ fn cached_disk_flush() -> Result<()> {
 }
 
 #[test]
+fn cached_disk_flush_pages() -> Result<()> {
+    async_rt::task::block_on(async move {
+        let cached_disk = new_cached_disk();
+        const SIZE: usize = BLOCK_SIZE;
+        let write_cnt = 100;
+        for i in 0..write_cnt {
+            let offset = i * BLOCK_SIZE;
+            let write_buf: [u8; SIZE] = [0; SIZE];
+            let len = cached_disk.write(offset, &write_buf[..]).await?;
+            assert_eq!(SIZE, len, "[CachedDisk] write failed");
+        }
+
+        let pages = vec![0, 1, 2];
+        let flush_num = cached_disk.flush_pages(&pages).await?;
+        assert_eq!(flush_num, pages.len(), "[CachedDisk] flush pages failed");
+        Ok(())
+    })
+}
+
+#[test]
 fn cached_disk_flusher_task() -> Result<()> {
     async_rt::task::block_on(async move {
         let cached_disk = Arc::new(new_cached_disk());

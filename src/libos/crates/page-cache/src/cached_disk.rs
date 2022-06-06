@@ -113,6 +113,13 @@ impl<A: PageAlloc> CachedDisk<A> {
     pub async fn flush(&self) -> Result<usize> {
         self.0.flush_disk().await
     }
+
+    /// Flush specific pages onto the backing disk.
+    pub async fn flush_pages(&self, pages: &Vec<BlockId>) -> Result<usize> {
+        let flush_num = self.0.flush_pages(pages).await.unwrap();
+        // self.0.disk.flush().await;
+        Ok(flush_num)
+    }
 }
 
 impl<A: PageAlloc> Drop for CachedDisk<A> {
@@ -382,6 +389,40 @@ impl<A: PageAlloc> Inner<A> {
         // 3) All dirty pages have been cleared;
         // 4) The underlying disk is also flushed.
         trace!("[CachedDisk] flush pages: {}", total_pages);
+        Ok(total_pages)
+    }
+
+    pub(crate) async fn flush_pages(&self, pages: &Vec<BlockId>) -> Result<usize> {
+        let mut total_pages = 0;
+        let sem = self.arw_lock.write().await;
+
+        for bid in pages {
+            let page_handle = self.acquire_page(*bid).await.unwrap();
+            let mut page_guard = page_handle.lock();
+
+            if page_guard.state() == PageState::Dirty {
+                page_guard.set_state(PageState::Flushing);
+                Self::clear_page_events(&page_handle);
+
+                let page_ptr = page_guard.as_slice();
+                let page_buf = unsafe { std::slice::from_raw_parts(page_ptr.as_ptr(), BLOCK_SIZE) };
+                drop(page_guard);
+
+                self.write_block(&bid, page_buf).await.unwrap();
+                Self::notify_page_events(&page_handle, Events::OUT);
+
+                let mut page_guard = page_handle.lock();
+                debug_assert!(page_guard.state() == PageState::Flushing);
+                page_guard.set_state(PageState::UpToDate);
+                drop(page_guard);
+
+                self.cache.release(page_handle);
+                total_pages += 1;
+            }
+        }
+
+        drop(sem);
+        trace!("[CachedDisk] flush specific pages: {}", total_pages);
         Ok(total_pages)
     }
 
