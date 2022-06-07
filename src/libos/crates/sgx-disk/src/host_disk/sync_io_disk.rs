@@ -46,7 +46,7 @@ impl SyncIoDisk {
                 if let Ok(len) = self.file.read_at(buf.as_slice_mut(), offset as u64) {
                     read_len += len;
                 }
-                offset += BLOCK_SIZE;
+                offset += buf.as_slice().len();
             }
             read_len
         });
@@ -72,7 +72,7 @@ impl SyncIoDisk {
                 if let Ok(len) = self.file.write_at(buf.as_slice(), offset as u64) {
                     write_len += len;
                 }
-                offset += BLOCK_SIZE;
+                offset += buf.as_slice().len();
             }
             write_len
         });

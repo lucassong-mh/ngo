@@ -9,9 +9,8 @@ cd occlum_instance
 rm -rf image
 copy_bom -f ../rocksdb.yaml --root image --include-dir /opt/occlum/etc/template
 
-new_json="$(jq '.resource_limits.user_space_size = "3000MB" |
-                .resource_limits.kernel_space_heap_size ="1024MB" |
-                .resource_limits.kernel_space_stack_size ="4MB" |
+new_json="$(jq '.resource_limits.user_space_size = "6000MB" |
+                .resource_limits.kernel_space_heap_size ="5000MB" |
                 .resource_limits.max_num_of_threads = 96' Occlum.json)" && \
 echo "${new_json}" > Occlum.json
 
@@ -21,7 +20,7 @@ occlum build
 BLUE='\033[1;34m'
 NC='\033[0m'
 echo -e "${BLUE}Run simple_rocksdb_example in Occlum.${NC}"
-occlum run /bin/simple_rocksdb_example
+# occlum run /bin/simple_rocksdb_example
 
 echo -e "${BLUE}Run benchmark in Occlum.${NC}"
 
@@ -30,4 +29,7 @@ BENCHMARK_CONFIG="fillseq,fillrandom,readseq,readrandom,deleteseq"
 occlum run /bin/db_bench --benchmarks=${BENCHMARK_CONFIG}
 
 echo -e "${BLUE}Run benchmark in host.${NC}"
-cd ../rocksdb && ./db_bench --benchmarks=$BENCHMARK_CONFIG
+# cd ../rocksdb && ./db_bench --benchmarks=$BENCHMARK_CONFIG
+
+echo -e "${BLUE}Run workloads in Occlum.${NC}"
+# occlum run /bin/run_workloads.sh

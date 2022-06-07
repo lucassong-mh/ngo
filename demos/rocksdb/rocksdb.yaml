@@ -6,3 +6,10 @@ targets:
       - files:
         - ../rocksdb/examples/simple_rocksdb_example
         - ../rocksdb/db_bench
+        - ../run_workloads.sh
+        - /opt/occlum/toolchains/bash/glibc/bash
+  - target: /bin
+    # build a symlink: ln -s $linksrc $target/linkname
+    createlinks:
+      - src: /bin/bash
+        linkname: sh

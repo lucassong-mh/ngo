@@ -397,6 +397,7 @@ impl<A: PageAlloc> Inner<A> {
         let sem = self.arw_lock.write().await;
 
         for bid in pages {
+            // If current page not in the cache, a new Uninit page is returned.
             let page_handle = self.acquire_page(*bid).await.unwrap();
             let mut page_guard = page_handle.lock();
 
