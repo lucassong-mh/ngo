@@ -1,6 +1,8 @@
 use crate::prelude::*;
 
-use async_io::fs::{DirentWriterContext, Extension, FileType, FsInfo, Metadata, PATH_MAX};
+use async_io::fs::{
+    DirentWriterContext, Extension, FallocateMode, FileType, FsInfo, Metadata, PATH_MAX,
+};
 use async_io::ioctl::IoctlCmd;
 use async_trait::async_trait;
 use std::any::Any;
@@ -36,6 +38,11 @@ pub trait AsyncInode: Any + Sync + Send {
 
     /// Resize the file
     async fn resize(&self, _len: usize) -> Result<()> {
+        return_errno!(ENOSYS, "not support");
+    }
+
+    /// Manipulate file space
+    async fn fallocate(&self, _mode: &FallocateMode, _offset: usize, _len: usize) -> Result<()> {
         return_errno!(ENOSYS, "not support");
     }
 

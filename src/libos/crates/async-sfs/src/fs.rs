@@ -125,6 +125,35 @@ impl AsyncInode for SFSInode {
         Ok(())
     }
 
+    async fn fallocate(&self, mode: &FallocateMode, offset: usize, len: usize) -> Result<()> {
+        let inode_type = self.metadata().await?.type_;
+        if inode_type != VfsFileType::File && inode_type != VfsFileType::Dir {
+            return_errno!(ENODEV, "not a regular file or directory");
+        }
+        let range = {
+            let end_offset = offset
+                .checked_add(len)
+                .ok_or(errno!(EFBIG, "too big size"))?;
+            if end_offset > MAX_FILE_SIZE {
+                return_errno!(EFBIG, "too big size");
+            }
+            (offset, end_offset)
+        };
+
+        match mode {
+            FallocateMode::Allocate(flags) if flags.is_empty() => {
+                let file_size = self.metadata().await?.size;
+                if range.1 > file_size {
+                    self.inner.write().await._resize(range.1).await?
+                }
+            }
+            _ => {
+                warn!("only support posix_fallocate now");
+            }
+        }
+        Ok(())
+    }
+
     async fn create(
         &self,
         name: &str,

@@ -68,6 +68,39 @@ fn create_file() -> Result<()> {
 }
 
 #[test]
+fn fallocate() -> Result<()> {
+    async_rt::task::block_on(async move {
+        let sfs = _create_new_sfs().await;
+        let root = sfs.root_inode().await;
+        let file1 = root.create("file1", VfsFileType::File, 0o777).await?;
+        assert_eq!(file1.metadata().await?.size, 0, "empty file size != 0");
+
+        let mode = FallocateMode::from(async_io::fs::FallocateFlags::empty());
+        let offset = 0x10;
+        let len = 0x20;
+        file1.fallocate(&mode, offset, len).await?;
+        assert_eq!(
+            file1.metadata().await?.size,
+            len + offset,
+            "wrong size after fallocate"
+        );
+
+        let new_offset = 0x0;
+        let new_len = 0x10;
+        file1.fallocate(&mode, new_offset, new_len).await?;
+        assert_eq!(
+            file1.metadata().await?.size,
+            len + offset,
+            "wrong size after fallocate"
+        );
+
+        assert!(file1.fallocate(&mode, MAX_FILE_SIZE, 0x1).await.is_err());
+        sfs.sync().await?;
+        Ok(())
+    })
+}
+
+#[test]
 fn resize() -> Result<()> {
     async_rt::task::block_on(async move {
         let sfs = _create_new_sfs().await;

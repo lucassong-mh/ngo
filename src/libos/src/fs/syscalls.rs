@@ -655,7 +655,7 @@ pub async fn do_fallocate(fd: FileDesc, mode: u32, offset: off_t, len: off_t) ->
         );
     }
     let flags = FallocateFlags::from_u32(mode)?;
-    file_ops::do_fallocate(fd, flags, offset as usize, len as usize)?;
+    file_ops::do_fallocate(fd, flags, offset as usize, len as usize).await?;
     Ok(0)
 }
 
