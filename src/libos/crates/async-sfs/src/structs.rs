@@ -11,13 +11,13 @@ use std::{slice, str};
 #[repr(C)]
 #[derive(Clone, Debug)]
 pub struct SuperBlock {
-    /// magic number, should be SFS_MAGIC
+    /// magic number
     pub magic: u32,
     /// number of blocks in fs
     pub blocks: u32,
     /// number of unused blocks in fs
     pub unused_blocks: u32,
-    /// information for sfs
+    /// information for fs
     pub info: Str32,
     /// number of freemap blocks
     pub freemap_blocks: u32,
@@ -76,11 +76,10 @@ impl FreeMap {
 #[derive(Clone, Debug)]
 pub struct DiskInode {
     /// size of the file (in bytes)
-    /// undefined in dir (256 * #entries ?)
     pub size: u32,
-    /// one of SYS_TYPE_* above
+    /// type of the file
     pub type_: FileType,
-    /// number of hard links to this file
+    /// number of hard links to this file.
     /// Note: "." and ".." is counted in this nlinks
     pub nlinks: u32,
     /// number of blocks
@@ -265,7 +264,7 @@ pub const INODE_CACHE_SIZE: usize = 256;
 /// number of direct blocks in inode
 pub const NDIRECT: usize = 12;
 /// default sfs infomation string
-pub const DEFAULT_INFO: &str = "simple file system";
+pub const SFS_INFO: &str = "simple file system";
 /// max length of infomation
 pub const MAX_INFO_LEN: usize = 31;
 /// max length of filename
@@ -300,4 +299,4 @@ const_assert!(o1; size_of::<SuperBlock>() <= BLOCK_SIZE);
 const_assert!(o2; size_of::<DiskInode>() <= BLOCK_SIZE);
 const_assert!(o3; size_of::<DiskEntry>() <= BLOCK_SIZE);
 const_assert!(o4; size_of::<IndirectBlock>() == BLOCK_SIZE);
-const_assert!(o5; DEFAULT_INFO.len() <= MAX_INFO_LEN);
+const_assert!(o5; SFS_INFO.len() <= MAX_INFO_LEN);
