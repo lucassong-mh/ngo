@@ -72,11 +72,7 @@ impl AsyncSimpleFS {
         let root = sfs
             ._new_inode(BLKN_ROOT, Dirty::new_dirty(DiskInode::new_dir()))
             .await;
-        let mut root_inner_mut = root.inner.write().await;
-        root_inner_mut.init_direntry(BLKN_ROOT).await?;
-        root_inner_mut.nlinks_inc(); //for .
-        root_inner_mut.nlinks_inc(); //for ..(root's parent is itself)
-        drop(root_inner_mut);
+        root.inner.write().await.init_direntry(BLKN_ROOT).await?;
         root.sync_all().await?;
         sfs.sync_metadata().await?;
 
@@ -139,7 +135,7 @@ impl AsyncSimpleFS {
             }
             // will not underflow
             super_block.unused_blocks -= 1;
-            //trace!("alloc block {:#x}", block_id);
+            // trace!("alloc block {:#x}", block_id);
         } else {
             let super_block = self.super_block.read().await;
             panic!("failed to allocate block: {:?}", *super_block)
@@ -148,16 +144,15 @@ impl AsyncSimpleFS {
     }
 
     /// Free a block
-    async fn free_block(&self, block_id: BlockId) -> Result<()> {
+    async fn free_block(&self, block_id: BlockId) {
         let mut free_map = self.free_map.write().await;
         let mut super_block = self.super_block.write().await;
         assert!(free_map.is_allocated(block_id));
         free_map.free(block_id);
         super_block.unused_blocks += 1;
-        //trace!("free block {:#x}", block_id);
+        // trace!("free block {:#x}", block_id);
         // clean the block after free
-        self.storage.write_at(block_id, &ZEROS, 0).await?;
-        Ok(())
+        self.storage.write_at(block_id, &ZEROS, 0).await.unwrap();
     }
 
     /// Create a new inode struct, then insert it to inode caches
@@ -167,6 +162,7 @@ impl AsyncSimpleFS {
             let inode_inner = InodeInner {
                 id,
                 disk_inode,
+                is_freed: false,
                 fs: self.self_ptr.clone(),
             };
             Arc::new(SFSInode::new(inode_inner, Extension::new()))
@@ -320,26 +316,31 @@ impl Debug for SFSInode {
 #[async_trait]
 impl AsyncInode for SFSInode {
     async fn read_at(&self, offset: usize, buf: &mut [u8]) -> Result<usize> {
-        let len = match self.metadata().await?.type_ {
-            VfsFileType::File | VfsFileType::SymLink => {
-                self.inner.read().await._read_at(offset, buf).await?
-            }
+        let inner = self.inner.read().await;
+        let len = match inner.disk_inode.type_ {
+            FileType::File | FileType::SymLink => inner._read_at(offset, buf).await?,
             _ => return_errno!(EISDIR, "not file"),
         };
         Ok(len)
     }
 
     async fn write_at(&self, offset: usize, buf: &[u8]) -> Result<usize> {
-        let info = self.metadata().await?;
-        let len = match info.type_ {
-            VfsFileType::File | VfsFileType::SymLink => {
+        let inner = self.inner.read().await;
+        let len = match inner.disk_inode.type_ {
+            FileType::File | FileType::SymLink => {
                 let end_offset = offset + buf.len();
-                if info.size < end_offset {
+                if end_offset > inner.disk_inode.size as usize {
+                    drop(inner);
                     let mut inner_mut = self.inner.write().await;
-                    inner_mut._resize(end_offset).await?;
+                    // When we get the lock, the file size may be changed
+                    if end_offset > inner_mut.disk_inode.size as usize
+                        && inner_mut.disk_inode.nlinks > 0
+                    {
+                        inner_mut._resize(end_offset).await?;
+                    }
                     inner_mut._write_at(offset, buf).await?
                 } else {
-                    self.inner.read().await._write_at(offset, buf).await?
+                    inner._write_at(offset, buf).await?
                 }
             }
             _ => return_errno!(EISDIR, "not file"),
@@ -394,7 +395,10 @@ impl AsyncInode for SFSInode {
     async fn resize(&self, len: usize) -> Result<()> {
         match self.metadata().await?.type_ {
             VfsFileType::File | VfsFileType::SymLink => {
-                self.inner.write().await._resize(len).await?
+                let mut inner_mut = self.inner.write().await;
+                if inner_mut.disk_inode.nlinks > 0 {
+                    inner_mut._resize(len).await?
+                }
             }
             _ => return_errno!(EISDIR, "not file"),
         }
@@ -420,7 +424,13 @@ impl AsyncInode for SFSInode {
             FallocateMode::Allocate(flags) if flags.is_empty() => {
                 let file_size = self.metadata().await?.size;
                 if range.1 > file_size {
-                    self.inner.write().await._resize(range.1).await?
+                    let mut inner_mut = self.inner.write().await;
+                    // When we get the lock, the file size may be changed
+                    if range.1 > inner_mut.disk_inode.size as usize
+                        && inner_mut.disk_inode.nlinks > 0
+                    {
+                        inner_mut._resize(range.1).await?;
+                    }
                 }
             }
             _ => {
@@ -440,45 +450,44 @@ impl AsyncInode for SFSInode {
         if info.type_ != VfsFileType::Dir {
             return_errno!(ENOTDIR, "not dir");
         }
+
+        // Fast path to return error
         if info.nlinks == 0 {
             return_errno!(ENOENT, "dir removed");
         }
-
-        // Ensure the name is not exist
-        if self
-            .inner
-            .read()
-            .await
-            .get_file_inode_id(name)
-            .await
-            .is_some()
-        {
+        if self.find(name).await.is_ok() {
             return_errno!(EEXIST, "entry exist");
         }
 
+        // Normal path
+        let mut inner_mut = self.inner.write().await;
+        if inner_mut.disk_inode.nlinks == 0 {
+            return_errno!(ENOENT, "dir removed");
+        }
+        // When we get the lock, the entry may be exist
+        if inner_mut.get_file_inode_id(name).await.is_some() {
+            return_errno!(EEXIST, "entry exist");
+        }
         // Create new inode
         let inode = {
-            let fs = self.inner.read().await.fs();
+            let fs = inner_mut.fs();
             match type_ {
                 VfsFileType::File => fs.new_inode_file().await?,
                 VfsFileType::SymLink => fs.new_inode_symlink().await?,
-                VfsFileType::Dir => fs.new_inode_dir(self.inner.read().await.id).await?,
+                VfsFileType::Dir => fs.new_inode_dir(inner_mut.id).await?,
                 _ => return_errno!(EINVAL, "invalid type"),
             }
         };
 
         // Write new entry
-        let (mut inner_mut, mut inode_inner_mut) = write_lock_two_inodes(self, &inode).await;
         inner_mut
             .append_direntry(&DiskEntry {
-                id: inode_inner_mut.id as u32,
+                id: inode.metadata().await?.inode as u32,
                 name: Str256::from(name),
-                type_: inode_inner_mut.disk_inode.type_,
+                type_: type_.into(),
             })
             .await?;
-        inode_inner_mut.nlinks_inc();
         if type_ == VfsFileType::Dir {
-            inode_inner_mut.nlinks_inc(); //for .
             inner_mut.nlinks_inc(); //for ..
         }
 
@@ -490,17 +499,12 @@ impl AsyncInode for SFSInode {
         if info.type_ != VfsFileType::Dir {
             return_errno!(ENOTDIR, "not dir");
         }
+
+        // Fast path to return error
         if info.nlinks == 0 {
             return_errno!(ENOENT, "dir removed");
         }
-        if !self
-            .inner
-            .read()
-            .await
-            .get_file_inode_id(name)
-            .await
-            .is_none()
-        {
+        if self.find(name).await.is_ok() {
             return_errno!(EEXIST, "entry exist");
         }
         let child = other
@@ -512,7 +516,16 @@ impl AsyncInode for SFSInode {
         if child.metadata().await?.type_ == VfsFileType::Dir {
             return_errno!(EISDIR, "entry is dir");
         }
+
+        // Normal path
         let (mut self_inner_mut, mut other_inner_mut) = write_lock_two_inodes(self, child).await;
+        if self_inner_mut.disk_inode.nlinks == 0 {
+            return_errno!(ENOENT, "dir removed");
+        }
+        // When we get the lock, the entry may be exist
+        if self_inner_mut.get_file_inode_id(name).await.is_some() {
+            return_errno!(EEXIST, "entry exist");
+        }
         self_inner_mut
             .append_direntry(&DiskEntry {
                 id: other_inner_mut.id as u32,
@@ -529,34 +542,48 @@ impl AsyncInode for SFSInode {
         if info.type_ != VfsFileType::Dir {
             return_errno!(ENOTDIR, "not dir");
         }
-        if info.nlinks == 0 {
-            return_errno!(ENOENT, "dir removed");
-        }
         if name == "." || name == ".." {
             return_errno!(EISDIR, "name is dir");
         }
 
-        let (inode_id, type_, entry_id) = self
-            .inner
-            .read()
-            .await
-            .get_file_inode_and_entry_id(name)
-            .await
-            .ok_or(errno!(ENOENT, "not found"))?;
-        let inode = self.inner.read().await.fs().get_inode(inode_id).await;
-        if type_ == FileType::Dir {
-            // only . and ..
+        // Fast path to return error
+        if info.nlinks == 0 {
+            return_errno!(ENOENT, "dir removed");
+        }
+        let inode = self.find(name).await?;
+        if inode.metadata().await?.type_ == VfsFileType::Dir {
             if inode.metadata().await?.size / DIRENT_SIZE > 2 {
                 return_errno!(ENOTEMPTY, "dir not empty");
             }
         }
-        let (mut self_inner_mut, mut other_inner_mut) = write_lock_two_inodes(self, &inode).await;
-        other_inner_mut.nlinks_dec();
-        if type_ == FileType::Dir {
-            other_inner_mut.nlinks_dec(); //for .
-            self_inner_mut.nlinks_dec(); //for ..
+
+        // Normal path
+        let mut inner_mut = self.inner.write().await;
+        if inner_mut.disk_inode.nlinks == 0 {
+            return_errno!(ENOENT, "dir removed");
         }
-        self_inner_mut.remove_direntry(entry_id).await?;
+        // When we get the lock, the entry may be removed
+        let (inode_id, type_, entry_id) = inner_mut
+            .get_file_inode_and_entry_id(name)
+            .await
+            .ok_or(errno!(ENOENT, "not found"))?;
+        let inode = inner_mut.fs().get_inode(inode_id).await;
+        if type_ == FileType::Dir {
+            if inode.metadata().await?.size / DIRENT_SIZE > 2 {
+                return_errno!(ENOTEMPTY, "dir not empty");
+            }
+            // for ".."
+            inner_mut.nlinks_dec();
+        }
+        inner_mut.remove_direntry(entry_id).await?;
+        drop(inner_mut);
+
+        let mut inode_inner_mut = inode.inner.write().await;
+        inode_inner_mut.nlinks_dec();
+        if type_ == FileType::Dir {
+            // for "."
+            inode_inner_mut.nlinks_dec();
+        }
 
         Ok(())
     }
@@ -592,87 +619,175 @@ impl AsyncInode for SFSInode {
             return_errno!(ENOENT, "dest dir removed");
         }
 
+        // Fast path to return error
         let inode = self.find(old_name).await?;
         // Avoid deadlock
         if inode.metadata().await?.inode == dest.metadata().await?.inode {
             return_errno!(EINVAL, "invalid path");
         }
 
-        if let Ok(dest_inode) = dest.find(new_name).await {
-            if inode.metadata().await?.inode == dest_inode.metadata().await?.inode {
-                // Same Inode, do nothing
-                return Ok(());
-            }
-            let inode_type = inode.metadata().await?.type_;
-            let dest_type = dest_inode.metadata().await?.type_;
-            match (inode_type, dest_type) {
-                (VfsFileType::Dir, VfsFileType::Dir) => {
-                    if dest_inode.metadata().await?.size / DIRENT_SIZE > 2 {
-                        return_errno!(ENOTEMPTY, "dir not empty");
-                    }
-                }
-                (VfsFileType::Dir, _) => {
-                    return_errno!(ENOTDIR, "not dir");
-                }
-                (_, VfsFileType::Dir) => {
-                    return_errno!(EISDIR, "entry is dir");
-                }
-                _ => {}
-            }
-            dest.unlink(new_name).await?;
-        }
-
-        let (inode_id, inode_type, entry_id) = self
-            .inner
-            .read()
-            .await
-            .get_file_inode_and_entry_id(old_name)
-            .await
-            .ok_or(errno!(ENOENT, "not found"))?;
+        // Normal path
         if self_info.inode == dest_info.inode {
-            // rename: in place modify name
-            self.inner
-                .write()
+            // Rename in one dir
+            let mut inner_mut = self.inner.write().await;
+            if inner_mut.disk_inode.nlinks == 0 {
+                return_errno!(ENOENT, "dir removed");
+            }
+            // When we get the lock, the entry may be removed
+            let (inode_id, inode_type, entry_id) = inner_mut
+                .get_file_inode_and_entry_id(old_name)
                 .await
-                .write_direntry(
-                    entry_id,
-                    &DiskEntry {
+                .ok_or(errno!(ENOENT, "not found"))?;
+
+            // Replace inode
+            if let Some((replace_inode_id, replace_inode_type, replace_entry_id)) =
+                inner_mut.get_file_inode_and_entry_id(new_name).await
+            {
+                if inode_id == replace_inode_id {
+                    // Same Inode, do nothing
+                    return Ok(());
+                }
+                let replace_inode = inner_mut.fs().get_inode(replace_inode_id).await;
+                match (inode_type, replace_inode_type) {
+                    (FileType::Dir, FileType::Dir) => {
+                        if replace_inode.metadata().await?.size / DIRENT_SIZE > 2 {
+                            return_errno!(ENOTEMPTY, "dir not empty");
+                        }
+                    }
+                    (FileType::Dir, _) => {
+                        return_errno!(ENOTDIR, "not dir");
+                    }
+                    (_, FileType::Dir) => {
+                        return_errno!(EISDIR, "entry is dir");
+                    }
+                    _ => {}
+                }
+                if replace_inode_type == FileType::Dir {
+                    // for ".."
+                    inner_mut.nlinks_dec();
+                }
+                inner_mut
+                    .write_direntry(
+                        entry_id,
+                        &DiskEntry {
+                            id: inode_id as u32,
+                            name: Str256::from(new_name),
+                            type_: inode_type,
+                        },
+                    )
+                    .await?;
+                // this operation may change the entry_id, put it after write_direntry
+                inner_mut.remove_direntry(replace_entry_id).await?;
+                drop(inner_mut);
+
+                let mut replace_inode_inner_mut = replace_inode.inner.write().await;
+                replace_inode_inner_mut.nlinks_dec();
+                if replace_inode_type == FileType::Dir {
+                    // for "."
+                    replace_inode_inner_mut.nlinks_dec();
+                }
+            } else {
+                // just modify name
+                inner_mut
+                    .write_direntry(
+                        entry_id,
+                        &DiskEntry {
+                            id: inode_id as u32,
+                            name: Str256::from(new_name),
+                            type_: inode_type,
+                        },
+                    )
+                    .await?;
+            }
+        } else {
+            // Move between dirs
+            let (mut self_inner_mut, mut dest_inner_mut) = write_lock_two_inodes(self, dest).await;
+            if self_inner_mut.disk_inode.nlinks == 0 || dest_inner_mut.disk_inode.nlinks == 0 {
+                return_errno!(ENOENT, "dir removed");
+            }
+            // When we get the lock, the entry may be removed
+            let (inode_id, inode_type, entry_id) = self_inner_mut
+                .get_file_inode_and_entry_id(old_name)
+                .await
+                .ok_or(errno!(ENOENT, "not found"))?;
+
+            // Replace inode
+            if let Some((replace_inode_id, replace_inode_type, replace_entry_id)) =
+                dest_inner_mut.get_file_inode_and_entry_id(new_name).await
+            {
+                if inode_id == replace_inode_id {
+                    // Same Inode, do nothing
+                    return Ok(());
+                }
+                let replace_inode = dest_inner_mut.fs().get_inode(replace_inode_id).await;
+                match (inode_type, replace_inode_type) {
+                    (FileType::Dir, FileType::Dir) => {
+                        if replace_inode.metadata().await?.size / DIRENT_SIZE > 2 {
+                            return_errno!(ENOTEMPTY, "dir not empty");
+                        }
+                    }
+                    (FileType::Dir, _) => {
+                        return_errno!(ENOTDIR, "not dir");
+                    }
+                    (_, FileType::Dir) => {
+                        return_errno!(EISDIR, "entry is dir");
+                    }
+                    _ => {}
+                }
+                // Replace the inode in dest.
+                // If is dir, no need to update the links in dest
+                dest_inner_mut
+                    .write_direntry(
+                        replace_entry_id,
+                        &DiskEntry {
+                            id: inode_id as u32,
+                            name: Str256::from(new_name),
+                            type_: inode_type,
+                        },
+                    )
+                    .await?;
+                drop(dest_inner_mut);
+                let mut replace_inode_inner_mut = replace_inode.inner.write().await;
+                replace_inode_inner_mut.nlinks_dec();
+                if replace_inode_type == FileType::Dir {
+                    // for "."
+                    replace_inode_inner_mut.nlinks_dec();
+                }
+
+                // remove the entry in old dir
+                self_inner_mut.remove_direntry(entry_id).await?;
+                if inode_type == FileType::Dir {
+                    self_inner_mut.nlinks_dec();
+                }
+            } else {
+                // just move inode
+                dest_inner_mut
+                    .append_direntry(&DiskEntry {
                         id: inode_id as u32,
                         name: Str256::from(new_name),
                         type_: inode_type,
-                    },
-                )
-                .await?;
-        } else {
-            // move
-            let (mut self_inner_mut, mut dest_inner_mut) = write_lock_two_inodes(self, dest).await;
-            dest_inner_mut
-                .append_direntry(&DiskEntry {
-                    id: inode_id as u32,
-                    name: Str256::from(new_name),
-                    type_: inode_type,
-                })
-                .await?;
-            self_inner_mut.remove_direntry(entry_id).await?;
-            if inode.metadata().await?.type_ == VfsFileType::Dir {
-                self_inner_mut.nlinks_dec();
-                dest_inner_mut.nlinks_inc();
+                    })
+                    .await?;
+                self_inner_mut.remove_direntry(entry_id).await?;
+                if inode_type == FileType::Dir {
+                    self_inner_mut.nlinks_dec();
+                    dest_inner_mut.nlinks_inc();
+                }
             }
         }
         Ok(())
     }
 
     async fn find(&self, name: &str) -> Result<Arc<dyn AsyncInode>> {
-        let info = self.metadata().await?;
-        if info.type_ != VfsFileType::Dir {
+        let inner = self.inner.read().await;
+        if inner.disk_inode.type_ != FileType::Dir {
             return_errno!(ENOTDIR, "not dir");
         }
-        let self_inner = self.inner.read().await;
-        let inode_id = self_inner
+        let inode_id = inner
             .get_file_inode_id(name)
             .await
             .ok_or(errno!(ENOENT, "not found"))?;
-        Ok(self_inner.fs().get_inode(inode_id).await)
+        Ok(inner.fs().get_inode(inode_id).await)
     }
 
     async fn read_link(&self) -> Result<String> {
@@ -697,24 +812,24 @@ impl AsyncInode for SFSInode {
     }
 
     async fn get_entry(&self, id: usize) -> Result<String> {
-        let info = self.metadata().await?;
-        if info.type_ != VfsFileType::Dir {
+        let inner = self.inner.read().await;
+        if inner.disk_inode.type_ != FileType::Dir {
             return_errno!(ENOTDIR, "not dir");
         }
-        if id >= info.size as usize / DIRENT_SIZE {
+        if id >= inner.disk_inode.size as usize / DIRENT_SIZE {
             return_errno!(ENOENT, "can not find");
         };
-        let entry = self.inner.read().await.read_direntry(id).await?;
+        let entry = inner.read_direntry(id).await?;
         Ok(String::from(entry.name.as_ref()))
     }
 
     async fn iterate_entries(&self, ctx: &mut DirentWriterContext) -> Result<usize> {
-        if self.metadata().await?.type_ != VfsFileType::Dir {
+        let inner = self.inner.read().await;
+        if inner.disk_inode.type_ != FileType::Dir {
             return_errno!(ENOTDIR, "not dir");
         }
 
         let mut total_written_len = 0;
-        let inner = self.inner.read().await;
         for entry_id in ctx.pos()..inner.disk_inode.size as usize / DIRENT_SIZE {
             let entry = inner.read_direntry(entry_id).await?;
             let written_len = match ctx.write_entry(
@@ -777,6 +892,8 @@ pub(crate) struct InodeInner {
     id: InodeId,
     /// On-disk Inode
     disk_inode: Dirty<DiskInode>,
+    /// If the inode is freed on disk
+    is_freed: bool,
     /// Reference to Async-SFS, used by almost all operations
     fs: Weak<AsyncSimpleFS>,
 }
@@ -981,8 +1098,8 @@ impl InodeInner {
         Ok(())
     }
 
-    /// remove a direntry in middle of file and insert the last one here, useful for direntry remove
-    /// should be only used in unlink
+    /// Remove a direntry in middle of file and insert the last one here
+    /// WARNING: it may change the index of some entries in dir
     async fn remove_direntry(&mut self, id: usize) -> Result<()> {
         let size = self.disk_inode.size as usize;
         let dirent_count = size / DIRENT_SIZE;
@@ -1057,13 +1174,13 @@ impl InodeInner {
                 // free extra blocks
                 for file_block_id in blocks..old_blocks {
                     let device_block_id = self.get_device_block_id(file_block_id).await?;
-                    self.fs().free_block(device_block_id).await?;
+                    self.fs().free_block(device_block_id).await;
                 }
                 // free indirect block if needed
                 if blocks < MAX_NBLOCK_DIRECT && old_blocks >= MAX_NBLOCK_DIRECT {
                     self.fs()
                         .free_block(self.disk_inode.indirect as BlockId)
-                        .await?;
+                        .await;
                     self.disk_inode.indirect = 0;
                 }
                 // free double indirect block if needed
@@ -1086,13 +1203,13 @@ impl InodeInner {
                             )
                             .await?;
                         assert!(indirect > 0);
-                        self.fs().free_block(indirect as BlockId).await?;
+                        self.fs().free_block(indirect as BlockId).await;
                     }
                     if blocks < MAX_NBLOCK_INDIRECT {
                         assert!(self.disk_inode.db_indirect > 0);
                         self.fs()
                             .free_block(self.disk_inode.db_indirect as BlockId)
-                            .await?;
+                            .await;
                         self.disk_inode.db_indirect = 0;
                     }
                 }
@@ -1196,12 +1313,21 @@ impl InodeInner {
     }
 
     async fn sync_metadata(&mut self) -> Result<()> {
+        // The inode is freed already, do nothing
+        if self.is_freed {
+            return Ok(());
+        }
+
+        // nlinks is zero, just delete it
         if self.disk_inode.nlinks == 0 {
             self._resize(0).await?;
             self.disk_inode.sync();
-            self.fs().free_block(self.id).await?;
+            self.fs().free_block(self.id).await;
+            self.is_freed = true;
             return Ok(());
         }
+
+        // Write back the metadata
         self.fs()
             .storage
             .store_struct::<DiskInode>(self.id, 0, &self.disk_inode)

@@ -134,6 +134,19 @@ impl From<FileType> for VfsFileType {
     }
 }
 
+impl From<VfsFileType> for FileType {
+    fn from(t: VfsFileType) -> Self {
+        match t {
+            VfsFileType::File => FileType::File,
+            VfsFileType::SymLink => FileType::SymLink,
+            VfsFileType::Dir => FileType::Dir,
+            VfsFileType::CharDevice => FileType::CharDevice,
+            VfsFileType::BlockDevice => FileType::BlockDevice,
+            _ => FileType::Invalid,
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone)]
 pub struct Str256(pub [u8; 256]);
@@ -195,7 +208,7 @@ impl DiskInode {
         DiskInode {
             size: 0,
             type_: FileType::File,
-            nlinks: 0,
+            nlinks: 1,
             blocks: 0,
             direct: [0; NDIRECT],
             indirect: 0,
@@ -206,7 +219,7 @@ impl DiskInode {
         DiskInode {
             size: 0,
             type_: FileType::SymLink,
-            nlinks: 0,
+            nlinks: 1,
             blocks: 0,
             direct: [0; NDIRECT],
             indirect: 0,
@@ -217,7 +230,7 @@ impl DiskInode {
         DiskInode {
             size: 0,
             type_: FileType::Dir,
-            nlinks: 0,
+            nlinks: 2,
             blocks: 0,
             direct: [0; NDIRECT],
             indirect: 0,

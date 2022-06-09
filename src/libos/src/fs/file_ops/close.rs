@@ -17,6 +17,8 @@ pub async fn do_close(fd: FileDesc) -> Result<()> {
     let file_ref = current!().file(fd)?;
     if let Some(disk_file) = file_ref.as_disk_file() {
         let _ = disk_file.flush().await;
+    } else if let Some(async_file_handle) = file_ref.as_async_file_handle() {
+        let _ = async_file_handle.dentry().inode().sync_all().await;
     }
 
     current.close_file(fd)?;
