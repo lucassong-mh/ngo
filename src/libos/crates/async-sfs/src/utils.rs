@@ -1,7 +1,11 @@
+use crate::fs::SFSInode;
 use crate::prelude::*;
+use crate::structs::InodeId;
 
+use lru::LruCache;
 use std::fmt::{Debug, Formatter};
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 
 /// Dirty wraps a value of type T with functions similiar to that of a Read/Write
 /// lock but simply sets a dirty flag on write(), reset on read()
@@ -81,7 +85,7 @@ impl Iterator for BlockRangeIter {
     type Item = BlockRange;
 
     fn next(&mut self) -> Option<<Self as Iterator>::Item> {
-        // Exit condition
+        // exit condition
         if self.begin >= self.end {
             return None;
         }
@@ -117,5 +121,71 @@ pub struct BlockRange {
 impl BlockRange {
     pub fn len(&self) -> usize {
         self.end - self.begin
+    }
+}
+
+/// A LRU Cache to hold inodes
+pub struct InodeCache {
+    inner: LruCache<InodeId, Arc<SFSInode>>,
+    soft_cap: usize,
+}
+
+impl InodeCache {
+    /// Creates a new LRU Cache that holds at most soft capacity items.
+    pub fn new(soft_cap: usize) -> Self {
+        Self {
+            inner: LruCache::unbounded(),
+            soft_cap,
+        }
+    }
+
+    /// Pushes a (id, inode) pair into the cache.
+    /// If an entry with id already exists in the cache or
+    /// another cache entry is removed (due to the lru’s policy),
+    /// then it returns the old entry’s (id, inode) pair.
+    pub fn push(&mut self, k: InodeId, v: Arc<SFSInode>) -> Option<(InodeId, Arc<SFSInode>)> {
+        if self.inner.len() < self.soft_cap {
+            return self.inner.push(k, v);
+        }
+
+        // cache is full
+        for _ in 0..self.soft_cap {
+            let (id, inode) = self.inner.pop_lru().unwrap();
+            // cache is the last owner of the inode
+            if Arc::strong_count(&inode) == 1 {
+                self.inner.push(k, v);
+                return Some((id, inode));
+            }
+            self.inner.put(id, inode);
+        }
+
+        // cannot pop item, expand the capacity of cache
+        self.soft_cap *= 2;
+        self.inner.push(k, v)
+    }
+
+    /// Returns a reference to the value of the key in the cache
+    /// or None if it is not present in the cache.
+    /// Moves the key to the head of the LRU list if it exists.
+    pub fn get(&mut self, k: &InodeId) -> Option<&Arc<SFSInode>> {
+        self.inner.get(k)
+    }
+
+    /// Retains only the elements specified by the predicate,
+    /// it returns all the values in cache.
+    pub fn retain_items<F>(&mut self, mut f: F) -> Vec<Arc<SFSInode>>
+    where
+        F: FnMut(&Arc<SFSInode>) -> bool,
+    {
+        let mut values = Vec::with_capacity(self.inner.len());
+        let cache_size = self.inner.len();
+        for _ in 0..cache_size {
+            let (id, inode) = self.inner.pop_lru().unwrap();
+            if f(&inode) {
+                self.inner.put(id, inode.clone());
+            }
+            values.push(inode);
+        }
+        values
     }
 }

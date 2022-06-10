@@ -1,13 +1,12 @@
 use crate::prelude::*;
 use crate::storage::{SFSPageAlloc, SFSStorage};
 use crate::structs::*;
-use crate::utils::{BlockRangeIter, Dirty};
+use crate::utils::{BlockRangeIter, Dirty, InodeCache};
 
 use async_trait::async_trait;
 use async_vfs::{AsyncFileSystem, AsyncInode};
 use bitvec::prelude::*;
 use block_device::BlockDevice;
-use lru::LruCache;
 use page_cache::CachedDisk;
 use std::any::Any;
 use std::fmt::{Debug, Formatter};
@@ -25,7 +24,7 @@ pub struct AsyncSimpleFS {
     /// described the usage of blocks, the blocks in use are marked 0
     free_map: AsyncRwLock<Dirty<FreeMap>>,
     /// cached inodes
-    inodes: AsyncRwLock<LruCache<InodeId, Arc<SFSInode>>>,
+    inodes: AsyncRwLock<InodeCache>,
     /// underlying storage
     storage: SFSStorage,
     /// pointer to self, used by inodes
@@ -59,7 +58,7 @@ impl AsyncSimpleFS {
         let sfs = Self {
             super_block: AsyncRwLock::new(Dirty::new_dirty(super_block)),
             free_map: AsyncRwLock::new(Dirty::new_dirty(free_map)),
-            inodes: AsyncRwLock::new(LruCache::new(INODE_CACHE_SIZE)),
+            inodes: AsyncRwLock::new(InodeCache::new(INODE_CACHE_CAP)),
             #[cfg(feature = "pagecache")]
             storage: SFSStorage::from_page_cache(CachedDisk::<SFSPageAlloc>::new(device).unwrap()),
             #[cfg(not(feature = "pagecache"))]
@@ -99,7 +98,7 @@ impl AsyncSimpleFS {
         Ok(Self {
             super_block: AsyncRwLock::new(Dirty::new(super_block)),
             free_map: AsyncRwLock::new(Dirty::new(FreeMap::from_bitset(freemap_bitset))),
-            inodes: AsyncRwLock::new(LruCache::new(INODE_CACHE_SIZE)),
+            inodes: AsyncRwLock::new(InodeCache::new(INODE_CACHE_CAP)),
             #[cfg(feature = "pagecache")]
             storage: SFSStorage::from_page_cache(CachedDisk::<SFSPageAlloc>::new(device).unwrap()),
             #[cfg(not(feature = "pagecache"))]
@@ -155,7 +154,7 @@ impl AsyncSimpleFS {
         self.storage.write_at(block_id, &ZEROS, 0).await.unwrap();
     }
 
-    /// Create a new inode struct, then insert it to inode caches
+    /// Create a new inode struct, and insert into inode cache
     /// Private used for load or create inode
     async fn _new_inode(&self, id: InodeId, disk_inode: Dirty<DiskInode>) -> Arc<SFSInode> {
         let inode = {
@@ -179,12 +178,25 @@ impl AsyncSimpleFS {
         assert!(self.free_map.read().await.is_allocated(id));
 
         // In the cache
-        if let Some(inode) = self.inodes.write().await.get(&id) {
+        let mut inode_cache = self.inodes.write().await;
+        if let Some(inode) = inode_cache.get(&id) {
             return inode.clone();
         }
         // Load if not in cache
         let disk_inode = self.storage.load_struct::<DiskInode>(id, 0).await.unwrap();
-        self._new_inode(id, Dirty::new(disk_inode)).await
+        let inode = {
+            let inode_inner = InodeInner {
+                id,
+                disk_inode: Dirty::new(disk_inode),
+                is_freed: false,
+                fs: self.self_ptr.clone(),
+            };
+            Arc::new(SFSInode::new(inode_inner, Extension::new()))
+        };
+        if let Some((_, lru_inode)) = inode_cache.push(id, inode.clone()) {
+            lru_inode.sync_all().await.unwrap();
+        }
+        inode
     }
 
     /// Create a new inode file
@@ -253,10 +265,9 @@ impl AsyncSimpleFS {
 
     /// Flush the cached dirty inodes
     async fn sync_cached_inodes(&self) -> Result<()> {
-        let mut inodes_map = self.inodes.write().await;
-        let cnt = inodes_map.len();
-        for _ in 0..cnt {
-            let (_, inode) = inodes_map.pop_lru().unwrap();
+        let mut inodes_cache = self.inodes.write().await;
+        let inodes = inodes_cache.retain_items(|i| Arc::strong_count(&i) > 1);
+        for inode in inodes.iter() {
             inode.sync_all().await?;
         }
         Ok(())
@@ -1103,9 +1114,11 @@ impl InodeInner {
     async fn remove_direntry(&mut self, id: usize) -> Result<()> {
         let size = self.disk_inode.size as usize;
         let dirent_count = size / DIRENT_SIZE;
-        debug_assert!(id < dirent_count);
-        let last_dirent = self.read_direntry(dirent_count - 1).await?;
-        self.write_direntry(id, &last_dirent).await?;
+        assert!(id < dirent_count);
+        if id < dirent_count - 1 {
+            let last_dirent = self.read_direntry(dirent_count - 1).await?;
+            self.write_direntry(id, &last_dirent).await?;
+        }
         self._resize(size - DIRENT_SIZE).await?;
         Ok(())
     }

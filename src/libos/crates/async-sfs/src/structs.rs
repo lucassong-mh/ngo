@@ -272,8 +272,8 @@ pub type InodeId = BlockId;
 
 /// magic number for sfs
 pub const SFS_MAGIC: u32 = 0x2f8d_be2b;
-/// number of max cached inodes
-pub const INODE_CACHE_SIZE: usize = 256;
+/// number of max cached inodes, it is a soft limit
+pub const INODE_CACHE_CAP: usize = 256;
 /// number of direct blocks in inode
 pub const NDIRECT: usize = 12;
 /// default sfs infomation string
