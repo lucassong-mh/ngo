@@ -146,7 +146,7 @@ fn resize_too_large_should_panic() -> Result<()> {
         let sfs = _create_new_sfs().await;
         let root = sfs.root_inode().await;
         let file1 = root.create("file1", VfsFileType::File, 0o777).await?;
-        assert!(file1.resize(1 << 40).await.is_err());
+        assert!(file1.resize(MAX_FILE_SIZE + 1).await.is_err());
         sfs.sync().await?;
         Ok(())
     })
@@ -587,13 +587,11 @@ fn seq_write_bench() -> Result<()> {
         let root = sfs.root_inode().await;
         let file1 = root.create("file1", VfsFileType::File, 0o777).await?;
         static BUFFER: [u8; BLOCK_SIZE] = [0x1; BLOCK_SIZE];
-        // Waning: the resize inside wite_at is very slow,
-        // so we resize before test.
-        //file1.resize(1 * GB).await?;
         let now = std::time::SystemTime::now();
         for i in 0..1 * GB / BLOCK_SIZE {
             file1.write_at(i * BLOCK_SIZE, &BUFFER).await?;
         }
+        file1.sync_all().await?;
         let secs = now.elapsed().unwrap().as_secs_f64();
         println!("{:?} seconds elapsed", secs);
         println!("seq-write throughput: {:?} MB/s", (GB / MB) as f64 / secs);

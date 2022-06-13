@@ -34,10 +34,20 @@ pub struct AsyncSimpleFS {
 impl AsyncSimpleFS {
     /// Create a new fs on blank block device
     pub async fn create(device: Arc<dyn BlockDevice>) -> Result<Arc<Self>> {
-        let space = device.total_bytes();
-        let blocks = (space + BLOCK_SIZE - 1) / BLOCK_SIZE;
-        let freemap_blocks = (space + BLKBITS * BLOCK_SIZE - 1) / BLKBITS / BLOCK_SIZE;
-        assert!(blocks >= 16, "space is too small");
+        let blocks = {
+            let blocks = (device.total_bytes() + BLOCK_SIZE - 1) / BLOCK_SIZE;
+            if blocks > MAX_NBLOCKS {
+                warn!(
+                    "device size is too big, use first {:#x} blocks",
+                    MAX_NBLOCKS
+                );
+                MAX_NBLOCKS
+            } else {
+                blocks
+            }
+        };
+        assert!(blocks >= 16, "device size is too small");
+        let freemap_blocks = (blocks + BLKBITS - 1) / BLKBITS;
 
         let super_block = SuperBlock {
             magic: SFS_MAGIC,
@@ -49,7 +59,7 @@ impl AsyncSimpleFS {
         let free_map = {
             let mut bitset = BitVec::with_capacity(freemap_blocks * BLKBITS);
             bitset.extend(core::iter::repeat(false).take(freemap_blocks * BLKBITS));
-            for i in (BLKN_FREEMAP + freemap_blocks)..blocks {
+            for i in 0..BLKN_FREEMAP + freemap_blocks {
                 bitset.set(i, true);
             }
             FreeMap::from_bitset(bitset)
@@ -1025,11 +1035,11 @@ impl InodeInner {
     async fn indirect_blocks(&self) -> Result<Vec<BlockId>> {
         let mut indirect_blocks = Vec::new();
         let file_blocks = self.disk_inode.blocks as usize;
-        if file_blocks >= MAX_NBLOCK_DIRECT {
+        if file_blocks > MAX_NBLOCK_DIRECT {
             assert!(self.disk_inode.indirect > 0);
             indirect_blocks.push(self.disk_inode.indirect as BlockId);
         }
-        if file_blocks >= MAX_NBLOCK_INDIRECT {
+        if file_blocks > MAX_NBLOCK_INDIRECT {
             assert!(self.disk_inode.db_indirect > 0);
             indirect_blocks.push(self.disk_inode.db_indirect as BlockId);
             let indirect_end = (file_blocks - MAX_NBLOCK_INDIRECT) / BLK_NENTRY + 1;
@@ -1129,9 +1139,7 @@ impl InodeInner {
             return_errno!(EINVAL, "size too big");
         }
         let blocks = (len + BLOCK_SIZE - 1) / BLOCK_SIZE;
-        if blocks > MAX_NBLOCK_DOUBLE_INDIRECT {
-            return_errno!(EINVAL, "size too big");
-        }
+        assert!(blocks <= MAX_NBLOCK_DOUBLE_INDIRECT);
         use core::cmp::Ordering;
         let old_blocks = self.disk_inode.blocks as usize;
         match blocks.cmp(&old_blocks) {
@@ -1145,18 +1153,18 @@ impl InodeInner {
             Ordering::Greater => {
                 self.disk_inode.blocks = blocks as u32;
                 // allocate indirect block if needed
-                if old_blocks < MAX_NBLOCK_DIRECT && blocks >= MAX_NBLOCK_DIRECT {
+                if old_blocks <= MAX_NBLOCK_DIRECT && blocks > MAX_NBLOCK_DIRECT {
                     self.disk_inode.indirect =
                         self.fs().alloc_block().await.expect("no space") as u32;
                 }
                 // allocate double indirect block if needed
-                if blocks >= MAX_NBLOCK_INDIRECT {
+                if blocks > MAX_NBLOCK_INDIRECT {
                     if self.disk_inode.db_indirect == 0 {
                         self.disk_inode.db_indirect =
                             self.fs().alloc_block().await.expect("no space") as u32;
                     }
                     let indirect_begin = {
-                        if old_blocks < MAX_NBLOCK_INDIRECT {
+                        if old_blocks <= MAX_NBLOCK_INDIRECT {
                             0
                         } else {
                             (old_blocks - MAX_NBLOCK_INDIRECT) / BLK_NENTRY + 1
@@ -1175,7 +1183,7 @@ impl InodeInner {
                             .await?;
                     }
                 }
-                // allocate extra blocks
+                // allocate data blocks
                 for file_block_id in old_blocks..blocks {
                     let device_block_id = self.fs().alloc_block().await.expect("no space");
                     self.set_device_block_id(file_block_id, device_block_id)
@@ -1184,22 +1192,22 @@ impl InodeInner {
                 self.disk_inode.size = len as u32;
             }
             Ordering::Less => {
-                // free extra blocks
+                // free data blocks
                 for file_block_id in blocks..old_blocks {
                     let device_block_id = self.get_device_block_id(file_block_id).await?;
                     self.fs().free_block(device_block_id).await;
                 }
                 // free indirect block if needed
-                if blocks < MAX_NBLOCK_DIRECT && old_blocks >= MAX_NBLOCK_DIRECT {
+                if blocks <= MAX_NBLOCK_DIRECT && old_blocks > MAX_NBLOCK_DIRECT {
                     self.fs()
                         .free_block(self.disk_inode.indirect as BlockId)
                         .await;
                     self.disk_inode.indirect = 0;
                 }
                 // free double indirect block if needed
-                if old_blocks >= MAX_NBLOCK_INDIRECT {
+                if old_blocks > MAX_NBLOCK_INDIRECT {
                     let indirect_begin = {
-                        if blocks < MAX_NBLOCK_INDIRECT {
+                        if blocks <= MAX_NBLOCK_INDIRECT {
                             0
                         } else {
                             (blocks - MAX_NBLOCK_INDIRECT) / BLK_NENTRY + 1
@@ -1218,7 +1226,7 @@ impl InodeInner {
                         assert!(indirect > 0);
                         self.fs().free_block(indirect as BlockId).await;
                     }
-                    if blocks < MAX_NBLOCK_INDIRECT {
+                    if blocks <= MAX_NBLOCK_INDIRECT {
                         assert!(self.disk_inode.db_indirect > 0);
                         self.fs()
                             .free_block(self.disk_inode.db_indirect as BlockId)

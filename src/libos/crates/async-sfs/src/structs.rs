@@ -26,7 +26,8 @@ pub struct SuperBlock {
 /// On-disk freemap bitset
 pub type FreeMapBitSet = BitVec<Lsb0, u8>;
 
-/// Described the usage of blocks
+/// Described the usage of blocks in bitset.
+/// The bit is true means block is allocated and vice versa.
 #[derive(Clone, Debug)]
 pub struct FreeMap {
     bitset: FreeMapBitSet,
@@ -35,7 +36,7 @@ pub struct FreeMap {
 
 impl FreeMap {
     pub fn from_bitset(bitset: FreeMapBitSet) -> Self {
-        let first_unused_id = (0..bitset.len()).find(|&i| bitset[i]);
+        let first_unused_id = (0..bitset.len()).find(|&i| !bitset[i]);
         Self {
             bitset,
             first_unused_id,
@@ -44,8 +45,8 @@ impl FreeMap {
 
     pub fn alloc(&mut self) -> Option<usize> {
         if let Some(alloc_id) = self.first_unused_id {
-            self.bitset.set(alloc_id, false);
-            let next_unused_id = (alloc_id + 1..self.bitset.len()).find(|&i| self.bitset[i]);
+            self.bitset.set(alloc_id, true);
+            let next_unused_id = (alloc_id + 1..self.bitset.len()).find(|&i| !self.bitset[i]);
             self.first_unused_id = next_unused_id;
             Some(alloc_id)
         } else {
@@ -54,7 +55,7 @@ impl FreeMap {
     }
 
     pub fn free(&mut self, id: usize) {
-        self.bitset.set(id, true);
+        self.bitset.set(id, false);
         match self.first_unused_id {
             Some(old_id) if id < old_id => {
                 self.first_unused_id = Some(id);
@@ -67,7 +68,7 @@ impl FreeMap {
     }
 
     pub fn is_allocated(&self, id: usize) -> bool {
-        !self.bitset[id]
+        self.bitset[id]
     }
 }
 
@@ -284,7 +285,9 @@ pub const MAX_INFO_LEN: usize = 31;
 pub const MAX_FNAME_LEN: usize = 255;
 /// max file size in theory (48KB + 4MB + 4GB)
 /// however, the file size is stored in u32
-pub const MAX_FILE_SIZE: usize = 0xffffffff;
+pub const MAX_FILE_SIZE: usize = 0xffff_ffff;
+/// max number of blocks in sfs, use u32 to store the blockId on disk
+pub const MAX_NBLOCKS: usize = 0xffff_ffff;
 /// block the superblock lives in
 pub const BLKN_SUPER: BlockId = 0;
 /// location of the root dir inode
@@ -304,9 +307,9 @@ pub const ZEROS: [u8; BLOCK_SIZE] = [0; BLOCK_SIZE];
 /// max number of blocks with direct blocks
 pub const MAX_NBLOCK_DIRECT: usize = NDIRECT;
 /// max number of blocks with indirect blocks
-pub const MAX_NBLOCK_INDIRECT: usize = NDIRECT + BLK_NENTRY;
+pub const MAX_NBLOCK_INDIRECT: usize = MAX_NBLOCK_DIRECT + BLK_NENTRY;
 /// max number of blocks with double indirect blocks
-pub const MAX_NBLOCK_DOUBLE_INDIRECT: usize = NDIRECT + BLK_NENTRY + BLK_NENTRY * BLK_NENTRY;
+pub const MAX_NBLOCK_DOUBLE_INDIRECT: usize = MAX_NBLOCK_INDIRECT + BLK_NENTRY * BLK_NENTRY;
 
 const_assert!(o1; size_of::<SuperBlock>() <= BLOCK_SIZE);
 const_assert!(o2; size_of::<DiskInode>() <= BLOCK_SIZE);
