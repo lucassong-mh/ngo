@@ -13,9 +13,11 @@ extern crate log;
 
 pub use dentry::Dentry;
 pub use file_handle::AsyncFileHandle;
-pub use inode::{AsyncFileSystem, AsyncInode};
+pub use fs::AsyncFileSystem;
+pub use inode::AsyncInode;
 
 mod dentry;
 mod file_handle;
+mod fs;
 mod inode;
 mod prelude;

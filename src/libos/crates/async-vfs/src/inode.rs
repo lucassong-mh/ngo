@@ -1,8 +1,7 @@
+use crate::fs::AsyncFileSystem;
 use crate::prelude::*;
 
-use async_io::fs::{
-    DirentWriterContext, Extension, FallocateMode, FileType, FsInfo, Metadata, PATH_MAX,
-};
+use async_io::fs::{DirentWriterContext, Extension, FallocateMode, FileType, Metadata, PATH_MAX};
 use async_io::ioctl::IoctlCmd;
 use async_trait::async_trait;
 use std::any::Any;
@@ -194,17 +193,4 @@ impl dyn AsyncInode {
     pub fn downcast_ref<T: AsyncInode>(&self) -> Option<&T> {
         self.as_any_ref().downcast_ref::<T>()
     }
-}
-
-/// Abstract Async FileSystem
-#[async_trait]
-pub trait AsyncFileSystem: Sync + Send {
-    /// Sync all data to the storage
-    async fn sync(&self) -> Result<()>;
-
-    /// Get the root INode of the file system
-    async fn root_inode(&self) -> Arc<dyn AsyncInode>;
-
-    /// Get the file system information
-    async fn info(&self) -> FsInfo;
 }
