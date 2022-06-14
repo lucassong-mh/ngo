@@ -1,11 +1,12 @@
-//! On-disk structures in SFS
+//! On-disk metadata structures in fs
 use crate::prelude::*;
+use crate::utils::AsBuf;
 
 use bitvec::prelude::*;
 use static_assertions::const_assert;
 use std::fmt::{Debug, Formatter};
-use std::mem::{size_of, size_of_val};
-use std::{slice, str};
+use std::mem::size_of;
+use std::str;
 
 /// On-disk superblock
 #[repr(C)]
@@ -237,16 +238,6 @@ impl DiskInode {
             indirect: 0,
             db_indirect: 0,
         }
-    }
-}
-
-/// Convert structs to [u8] slice
-pub trait AsBuf {
-    fn as_buf(&self) -> &[u8] {
-        unsafe { slice::from_raw_parts(self as *const _ as *const u8, size_of_val(self)) }
-    }
-    fn as_buf_mut(&mut self) -> &mut [u8] {
-        unsafe { slice::from_raw_parts_mut(self as *mut _ as *mut u8, size_of_val(self)) }
     }
 }
 

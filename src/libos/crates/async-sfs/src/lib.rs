@@ -17,9 +17,9 @@ extern crate lru;
 pub use fs::AsyncSimpleFS;
 
 mod fs;
+mod metadata;
 mod prelude;
 mod storage;
-mod structs;
 mod utils;
 
 #[cfg(test)]

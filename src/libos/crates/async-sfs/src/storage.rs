@@ -1,4 +1,4 @@
-use crate::structs::AsBuf;
+use crate::utils::AsBuf;
 
 use block_device::{BlockDevice, BlockDeviceExt, BlockId, BLOCK_SIZE};
 use errno::prelude::*;

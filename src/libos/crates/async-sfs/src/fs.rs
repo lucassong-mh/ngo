@@ -1,7 +1,7 @@
+use crate::metadata::*;
 use crate::prelude::*;
 use crate::storage::{SFSPageAlloc, SFSStorage};
-use crate::structs::*;
-use crate::utils::{BlockRangeIter, Dirty, InodeCache};
+use crate::utils::{AsBuf, BlockRangeIter, Dirty, InodeCache};
 
 use async_trait::async_trait;
 use async_vfs::{AsyncFileSystem, AsyncInode};

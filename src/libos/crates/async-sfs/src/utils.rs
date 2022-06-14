@@ -1,11 +1,22 @@
 use crate::fs::SFSInode;
+use crate::metadata::InodeId;
 use crate::prelude::*;
-use crate::structs::InodeId;
 
 use lru::LruCache;
 use std::fmt::{Debug, Formatter};
+use std::mem::size_of_val;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
+
+/// Convert structs to [u8] slice
+pub trait AsBuf {
+    fn as_buf(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self as *const _ as *const u8, size_of_val(self)) }
+    }
+    fn as_buf_mut(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self as *mut _ as *mut u8, size_of_val(self)) }
+    }
+}
 
 /// Dirty wraps a value of type T with functions similiar to that of a Read/Write
 /// lock but simply sets a dirty flag on write(), reset on read()

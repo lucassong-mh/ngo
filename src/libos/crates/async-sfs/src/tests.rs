@@ -1,6 +1,6 @@
 use crate::fs::*;
+use crate::metadata::*;
 use crate::prelude::*;
-use crate::structs::*;
 
 use async_vfs::AsyncFileSystem;
 use block_device::mem_disk::MemDisk;
