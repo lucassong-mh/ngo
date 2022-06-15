@@ -37,6 +37,10 @@ impl FixedSizePageAlloc {
     pub fn alloc_page(&self, layout: Layout) -> *mut u8 {
         let cost_bytes = self.remain_bytes.load(Ordering::Relaxed).min(layout.size());
         self.remain_bytes.fetch_sub(cost_bytes, Ordering::Relaxed);
+
+        if self.remain_bytes.load(Ordering::Relaxed) == 0 {
+            return std::ptr::null_mut();
+        }
         unsafe { alloc(layout) }
     }
 

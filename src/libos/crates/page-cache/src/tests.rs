@@ -7,7 +7,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 // MyPageAlloc is a test-purpose allocator
-impl_page_alloc! { MyPageAlloc, 1024 * 1024 * 512 }
+const MB: usize = 1024 * 1024;
+impl_page_alloc! { MyPageAlloc, MB * 512 }
 
 /// PageCache tests
 struct SimpleFlusher;
@@ -90,6 +91,30 @@ fn page_cache_flush() {
         let mut dirty = Vec::with_capacity(128);
         let dirty_num = cache.flush_dirty(&mut dirty);
         assert_eq!(dirty_num, 0);
+    })
+}
+
+#[test]
+fn page_cache_batch_flush() -> Result<()> {
+    async_rt::task::block_on(async move {
+        let cache = new_page_cache();
+        let keys = vec![3, 8, 7, 0, 2, 9, 5];
+
+        for key in &keys {
+            let page_handle = cache.acquire(*key).unwrap();
+            let mut page_guard = page_handle.lock();
+            page_guard.set_state(PageState::Dirty);
+            drop(page_guard);
+            cache.release(page_handle);
+        }
+
+        let mut dirty_pages = Vec::with_capacity(128);
+        let flush_num = cache.batch_flush_dirty(&mut dirty_pages, 1024);
+
+        let v: Vec<_> = dirty_pages.iter().map(|(k, v)| (*k, v.len())).collect();
+        assert_eq!(v, vec![(0usize, 1usize), (2, 2), (5, 1), (7, 3)]);
+        assert_eq!(flush_num, keys.len());
+        Ok(())
     })
 }
 

@@ -1,8 +1,11 @@
 use crate::prelude::*;
+use block_device::BLOCK_SIZE;
 
 use std::alloc::Layout;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
+
+const PAGE_SIZE: usize = BLOCK_SIZE;
 
 /// A page obtained from an allocator.
 pub struct Page<A: PageAlloc> {
@@ -16,16 +19,15 @@ unsafe impl<A: PageAlloc> Send for Page<A> {}
 unsafe impl<A: PageAlloc> Sync for Page<A> {}
 
 impl<A: PageAlloc> Page<A> {
-    pub fn new() -> Result<Self> {
-        let ptr = A::alloc_page(Self::layout());
-        let ptr = NonNull::new(ptr);
-        if ptr.is_none() {
-            return_errno!(ENOMEM, "page alloc failed, not enough memory");
+    pub fn new() -> Option<Self> {
+        let page_ptr = A::alloc_page(Self::layout());
+        if let Some(ptr) = NonNull::new(page_ptr) {
+            return Some(Self {
+                ptr,
+                marker: PhantomData,
+            });
         }
-        Ok(Self {
-            ptr: ptr.unwrap(),
-            marker: PhantomData,
-        })
+        return None;
     }
 
     #[inline]
@@ -45,12 +47,12 @@ impl<A: PageAlloc> Page<A> {
 
     #[inline]
     pub const fn size() -> usize {
-        4096
+        PAGE_SIZE
     }
 
     #[inline]
     pub const fn align() -> usize {
-        4096
+        PAGE_SIZE
     }
 
     #[inline]

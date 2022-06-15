@@ -17,12 +17,15 @@ pub(crate) struct Inner<K: PageKey, A: PageAlloc> {
 }
 
 impl<K: PageKey, A: PageAlloc> PageHandle<K, A> {
-    pub(crate) fn new(key: K) -> Self {
-        Self(Arc::new(Inner {
-            key,
-            pollee: Pollee::new(Events::empty()),
-            state_and_page: Mutex::new((PageState::Uninit, Page::new().unwrap())),
-        }))
+    pub(crate) fn new(key: K) -> Option<Self> {
+        if let Some(new_page) = Page::new() {
+            return Some(Self(Arc::new(Inner {
+                key,
+                pollee: Pollee::new(Events::empty()),
+                state_and_page: Mutex::new((PageState::Uninit, new_page)),
+            })));
+        }
+        return None;
     }
 
     pub fn key(&self) -> K {

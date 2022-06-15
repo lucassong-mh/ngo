@@ -132,11 +132,11 @@ impl<K: PageKey, A: PageAlloc> EvictorTaskInner<K, A> {
         .await;
 
         // Evict pages to free memory
-        const BATCH_SIZE: usize = 25_000;
+        const BATCH_EVICT_SIZE: usize = 25_000;
         while A::is_memory_low() {
             let mut total_evicted = 0;
             self.for_each_page_cache(|page_cache| {
-                total_evicted += page_cache.evict(BATCH_SIZE);
+                total_evicted += page_cache.evict(BATCH_EVICT_SIZE);
             });
             trace!("[PageEvictor] memory low, total evicted: {}", total_evicted);
             if total_evicted == 0 {

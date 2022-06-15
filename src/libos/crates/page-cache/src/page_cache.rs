@@ -61,10 +61,14 @@ impl<K: PageKey, A: PageAlloc> PageCache<K, A> {
             return Some(page_handle_incache.clone());
         // Cache miss
         } else {
-            let page_handle = PageHandle::new(key);
-            cache.put(key.into(), page_handle.clone());
-            return Some(page_handle);
+            // Cache miss and a new page is allocated
+            if let Some(page_handle) = PageHandle::new(key) {
+                cache.put(key.into(), page_handle.clone());
+                return Some(page_handle);
+            }
         }
+        // Cache miss and no free space for new page
+        None
     }
 
     /// Release the page.
@@ -72,9 +76,10 @@ impl<K: PageKey, A: PageAlloc> PageCache<K, A> {
     /// All page handles obtained via the `acquire` method
     /// must be returned via the `release` method.
     pub fn release(&self, page_handle: PageHandle<K, A>) {
+        // The dirty_set traces dirty pages in order
         let mut dirty_set = self.0.dirty_set.lock();
         let page_guard = page_handle.lock();
-        // Update dirty_set when release
+        // Update dirty_set when page_handle released
         if page_guard.state() == PageState::Dirty {
             dirty_set.insert(page_handle.key().into());
         } else {
@@ -86,10 +91,10 @@ impl<K: PageKey, A: PageAlloc> PageCache<K, A> {
     /// "Flushing".
     ///
     /// The handles of dirty pages are pushed into the given `Vec`.
-    /// The dirty pages are in ascending order. Return flush numbers.
+    /// The dirty page ids are in ascending order. Return flush numbers.
     pub fn flush_dirty(&self, dirty: &mut Vec<PageHandle<K, A>>) -> usize {
         let cache = self.0.cache.lock();
-        // The dirty_set traces dirty pages
+        // The dirty_set traces dirty pages in order
         let mut dirty_set = self.0.dirty_set.lock();
         let mut flush_num = 0;
 
@@ -102,6 +107,78 @@ impl<K: PageKey, A: PageAlloc> PageCache<K, A> {
                 dirty.push(page_handle_incache.clone());
                 flush_num += 1;
                 drop(page_guard);
+            }
+        }
+        flush_num
+    }
+
+    /// Pop a number of dirty pages and switch their state to
+    /// "Flushing".
+    ///
+    /// The handles of consecutive dirty pages are pushed into the given `Vec`.
+    /// The dirty pages are grouped in `(PageId, Vec<PageHandle>)` where
+    /// the key is the first page id and the value is page handles which pages are increment.
+    /// Return total flush numbers.
+    pub fn batch_flush_dirty(
+        &self,
+        dirty: &mut Vec<(PageId, Vec<PageHandle<K, A>>)>,
+        max_batch_size: usize,
+    ) -> usize {
+        let cache = self.0.cache.lock();
+        // The dirty_set traces dirty pages in order
+        let mut dirty_set = self.0.dirty_set.lock();
+        let mut flush_num = 0;
+
+        loop {
+            match dirty_set.pop_first() {
+                // Handle the first page case
+                Some(first_key) => {
+                    if let Some(page_handle_incache) = cache.just_get(&first_key) {
+                        let mut first_page_key: PageId = 0;
+                        let mut page_handles = Vec::with_capacity(max_batch_size);
+                        let mut pre_key: PageId = 0;
+
+                        let mut page_guard = page_handle_incache.lock();
+                        debug_assert!(page_guard.state() == PageState::Dirty);
+                        page_guard.set_state(PageState::Flushing);
+                        page_handles.push(page_handle_incache.clone());
+                        flush_num += 1;
+                        drop(page_guard);
+
+                        first_page_key = first_key;
+                        pre_key = first_key;
+
+                        // Handle the following pages case
+                        loop {
+                            if let Some(cur_key) = dirty_set.first() {
+                                // Ensure always return consecutive pages
+                                if cur_key - pre_key != 1 {
+                                    break;
+                                }
+                                let cur_key = dirty_set.pop_first().unwrap();
+                                if let Some(page_handle_incache) = cache.just_get(&cur_key) {
+                                    let mut page_guard = page_handle_incache.lock();
+                                    debug_assert!(page_guard.state() == PageState::Dirty);
+                                    page_guard.set_state(PageState::Flushing);
+                                    page_handles.push(page_handle_incache.clone());
+                                    flush_num += 1;
+                                    drop(page_guard);
+
+                                    if page_handles.len() >= max_batch_size {
+                                        break;
+                                    }
+                                    pre_key = cur_key;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                        dirty.push((first_page_key, page_handles));
+                    }
+                }
+                None => {
+                    break;
+                }
             }
         }
         flush_num
@@ -143,6 +220,10 @@ impl<K: PageKey, A: PageAlloc> PageCache<K, A> {
     pub fn poll(&self, poller: Option<&mut Poller>) -> Events {
         self.0.poll(poller)
     }
+
+    pub fn clear_events(&self) {
+        self.0.pollee.reset_events()
+    }
 }
 
 impl<K: PageKey, A: PageAlloc> PageCacheInner<K, A> {
@@ -175,9 +256,12 @@ impl<K: PageKey, A: PageAlloc> PageCacheInner<K, A> {
         let mut evict_num = 0;
         for _ in 0..evict_total {
             if let Some(page_handle) = cache.evict() {
-                debug_assert!(Arc::strong_count(&page_handle.0) == 1);
                 let page_guard = page_handle.lock();
-                if page_guard.state() == PageState::UpToDate {
+                // Make sure page state is evictable and no one holds current page handle
+                if (page_guard.state() == PageState::UpToDate
+                    || page_guard.state() == PageState::Uninit)
+                    && Arc::strong_count(&page_handle.0) == 1
+                {
                     drop(page_guard);
                     drop(page_handle);
                     evict_num += 1;
@@ -187,6 +271,8 @@ impl<K: PageKey, A: PageAlloc> PageCacheInner<K, A> {
                 }
             }
         }
+
+        self.pollee.add_events(Events::OUT);
         evict_num
     }
 
@@ -194,7 +280,6 @@ impl<K: PageKey, A: PageAlloc> PageCacheInner<K, A> {
         let nflush = self.flusher.flush().await.unwrap();
         if nflush > 0 {
             trace!("[PageCache] flush pages: {}", nflush);
-            self.pollee.add_events(Events::OUT);
         }
     }
 }
