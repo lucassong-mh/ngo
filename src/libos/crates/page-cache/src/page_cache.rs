@@ -267,7 +267,7 @@ impl<K: PageKey, A: PageAlloc> PageCacheInner<K, A> {
                     evict_num += 1;
                 } else {
                     drop(page_guard);
-                    cache.put(page_handle.key().into(), page_handle.clone());
+                    cache.put_back(page_handle.key().into(), page_handle.clone());
                 }
             }
         }

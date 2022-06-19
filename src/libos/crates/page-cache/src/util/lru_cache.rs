@@ -66,8 +66,8 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
             self.detach(node);
             node
         });
-        // Comment self-evict policy to avoid mis-behavior of lrucache
-        // e.g., in page-cache, evict dirty pages without flushing.
+        // Comment self-evict policy to avoid potential mis-behavior
+        // e.g., in page cache, evicting dirty pages without flushing would cause data loss.
         // if old_node.is_none() && self.map.len() >= self.cap {
         //     let tail = self.tail.unwrap();
         //     self.detach(tail);
@@ -102,6 +102,25 @@ impl<K: Hash + Eq + PartialEq, V> LruCache<K, V> {
         })
     }
 
+    /// Put an new object to the tail instead.
+    pub fn put_back(&mut self, k: K, v: V) {
+        let node = Box::leak(Box::new(Node::new(k, v))).into();
+        match self.tail {
+            Some(mut tail) => {
+                unsafe {
+                    tail.as_mut().next = Some(node);
+                }
+                self.tail = Some(node);
+            }
+            None => {
+                self.head = Some(node);
+                self.tail = Some(node);
+            }
+        }
+        self.map.insert(KeyRef(node), node);
+    }
+
+    /// Get an object without changing current LRU state.
     pub fn just_get(&self, k: &K) -> Option<&V> {
         if let Some(node) = self.map.get(k) {
             unsafe { Some(&node.as_ref().v) }
@@ -183,5 +202,9 @@ mod tests {
         assert_eq!(cache.evict().unwrap(), 1);
         assert_eq!(*cache.get(&3).unwrap(), 3);
         assert_eq!(*cache.get(&5).unwrap(), 5);
+        assert_eq!(*cache.just_get(&3).unwrap(), 3);
+        assert_eq!(cache.evict().unwrap(), 3);
+        cache.put_back(7, 7);
+        assert_eq!(cache.evict().unwrap(), 7);
     }
 }

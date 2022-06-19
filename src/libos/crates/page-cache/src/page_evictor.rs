@@ -60,7 +60,7 @@ impl<K: PageKey, A: PageAlloc> std::fmt::Debug for EvictorTask<K, A> {
 
 struct EvictorTaskInner<K: PageKey, A: PageAlloc> {
     caches: Mutex<Vec<Arc<PageCacheInner<K, A>>>>,
-    wq: WaiterQueue,
+    evictor_wq: WaiterQueue,
     is_dropped: AtomicBool,
     marker: PhantomData<(K, A)>,
 }
@@ -71,7 +71,7 @@ impl<K: PageKey, A: PageAlloc> EvictorTask<K, A> {
 
         let this = new_self.0.clone();
         A::register_low_memory_callback(move || {
-            this.wq.wake_all();
+            this.evictor_wq.wake_all();
         });
 
         let this = new_self.0.clone();
@@ -87,7 +87,7 @@ impl<K: PageKey, A: PageAlloc> EvictorTaskInner<K, A> {
     pub fn new() -> Self {
         EvictorTaskInner {
             caches: Mutex::new(Vec::new()),
-            wq: WaiterQueue::new(),
+            evictor_wq: WaiterQueue::new(),
             is_dropped: AtomicBool::new(false),
             marker: PhantomData,
         }
@@ -107,7 +107,7 @@ impl<K: PageKey, A: PageAlloc> EvictorTaskInner<K, A> {
 
     async fn task_main(&self) {
         let mut waiter = Waiter::new();
-        self.wq.enqueue(&mut waiter);
+        self.evictor_wq.enqueue(&mut waiter);
         const AUTO_EVICT_PERIOD: Duration = Duration::from_millis(10);
         while !self.is_dropped() {
             waiter.reset();
@@ -121,7 +121,7 @@ impl<K: PageKey, A: PageAlloc> EvictorTaskInner<K, A> {
             let mut timeout = AUTO_EVICT_PERIOD;
             waiter.wait_timeout(Some(&mut timeout)).await;
         }
-        self.wq.dequeue(&mut waiter);
+        self.evictor_wq.dequeue(&mut waiter);
     }
 
     async fn evict_pages(&self) {

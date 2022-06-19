@@ -50,7 +50,8 @@ impl FixedSizePageAlloc {
         unsafe { dealloc(ptr, layout) }
     }
 
-    // Return true if 90 percent capacity has been consumed
+    /// Caculate current memory consumption.
+    /// Return true if 90 percent capacity has been consumed.
     pub fn is_memory_low(&self) -> bool {
         let alloc_limit: usize = self.total_bytes / 10;
         if self.remain_bytes.load(Ordering::Relaxed) < alloc_limit {
@@ -102,7 +103,9 @@ macro_rules! impl_page_alloc {
             }
 
             fn register_low_memory_callback(f: impl Fn()) {
-                f();
+                if ALLOCATOR.is_memory_low() {
+                    f();
+                }
             }
 
             fn is_memory_low() -> bool {
